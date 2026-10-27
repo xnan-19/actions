@@ -6,14 +6,12 @@ from playwright.sync_api import sync_playwright
 
 BARK_KEY = os.getenv("BARK_KEY", "")
 
-# 监控目标：日期、显示名称、起始时间（包含）
 TARGET_CONFIGS = [
     {"date": "2026-11-05", "label": "11月05日", "min_hour": 10},
     {"date": "2026-11-24", "label": "11月24日", "min_hour": 14},
 ]
 
 def build_direct_url(date_str: str) -> str:
-    """生成带完整参数的 2 人选座直达链接"""
     base_url = "https://file.sagano.linktivity.io/seat/51/down"
     params = {
         "lang": "ja",
@@ -26,7 +24,6 @@ def build_direct_url(date_str: str) -> str:
     return f"{base_url}?{urllib.parse.urlencode(params)}"
 
 def send_bark(title: str, content: str, jump_url: str = ""):
-    """向 iPhone Bark 发送强提醒并附带直达抢票链接"""
     if not BARK_KEY:
         print(f"[提示] 未配置 BARK_KEY，跳过推送：{title} - {content}")
         return
@@ -38,6 +35,69 @@ def send_bark(title: str, content: str, jump_url: str = ""):
         print(f"Bark 推送状态: {resp.status_code}")
     except Exception as e:
         print(f"Bark 推送失败: {e}")
+
+def handle_station_selection(page):
+    """自动完成乘降车站选择并进入车次列表"""
+    # 1. 尝试原生 select
+    selects = page.locator("select").all()
+    if len(selects) >= 2:
+        try:
+            selects[0].select_option(label="トロッコ嵯峨")
+            selects[1].select_option(label="トロッコ亀岡")
+        except Exception:
+            pass
+
+    # 2. 自定义下拉选择框处理：乗車駅
+    dep_btn = page.locator("text='乗車駅を選択してください'").first
+    if dep_btn.count() > 0 and dep_btn.is_visible():
+        try:
+            dep_btn.click(timeout=3000)
+        except Exception:
+            dep_btn.locator("..").click(timeout=3000)
+        page.wait_for_timeout(600)
+        
+        # 选中 トロッコ嵯峨
+        try:
+            page.locator("text='トロッコ嵯峨'").last.click(timeout=3000)
+        except Exception:
+            page.evaluate("""() => {
+                const el = Array.from(document.querySelectorAll('*')).reverse().find(e => e.innerText && e.innerText.trim() === 'トロッコ嵯峨');
+                if (el) el.click();
+            }""")
+        page.wait_for_timeout(600)
+
+    # 3. 自定义下拉选择框处理：降車駅
+    arr_btn = page.locator("text='降車駅を選択してください'").first
+    if arr_btn.count() > 0 and arr_btn.is_visible():
+        try:
+            arr_btn.click(timeout=3000)
+        except Exception:
+            arr_btn.locator("..").click(timeout=3000)
+        page.wait_for_timeout(600)
+        
+        # 选中 トロッコ亀岡
+        try:
+            page.locator("text='トロッコ亀岡'").last.click(timeout=3000)
+        except Exception:
+            page.evaluate("""() => {
+                const el = Array.from(document.querySelectorAll('*')).reverse().find(e => e.innerText && e.innerText.trim() === 'トロッコ亀岡');
+                if (el) el.click();
+            }""")
+        page.wait_for_timeout(600)
+
+    # 4. 点击【次へ】推进到车次列表
+    next_btn = page.locator("button:has-text('次へ'), [role='button']:has-text('次へ'), div:has-text('次へ')").last
+    if next_btn.count() > 0 and next_btn.is_visible():
+        print("✔ 车站已选定，点击【次へ】进入列车选择页...")
+        try:
+            next_btn.click(timeout=3000)
+        except Exception:
+            page.evaluate("""() => {
+                const btns = Array.from(document.querySelectorAll('button, div, a'));
+                const btn = btns.reverse().find(b => b.innerText && b.innerText.trim() === '次へ');
+                if (btn) btn.click();
+            }""")
+        page.wait_for_timeout(3000)
 
 def check_date(page, config: dict):
     date_str = config["date"]
@@ -53,29 +113,34 @@ def check_date(page, config: dict):
 
     try:
         page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
-        
-        # 等待页面车次列表区域加载
-        try:
-            page.wait_for_selector("text=列車を選択してください", timeout=15000)
-        except Exception:
-            pass
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2500)
 
-        # 通过 TreeWalker 精准定位每趟车，互不干扰
+        # 检查是否需要选择车站并点击“次へ”
+        if "乗車駅を選択してください" in page.content() or page.locator("text='次へ'").count() > 0:
+            handle_station_selection(page)
+
+        # 等待列车列表渲染出来
+        try:
+            page.wait_for_selector("text=/嵯峨野\\s*\\d+号/", timeout=15000)
+        except Exception:
+            page.wait_for_timeout(3000)
+
+        # 模拟向下滚动，加载全天所有班次
+        for _ in range(4):
+            page.evaluate("window.scrollBy(0, 800)")
+            page.wait_for_timeout(300)
+
+        # 解析车次卡片
         train_cards = page.evaluate("""() => {
             const results = [];
             const seen = new Set();
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            let node;
-            while (node = walker.nextNode()) {
-                const text = node.nodeValue.trim();
-                const match = text.match(/嵯峨野\\s*\\d+号/);
+            const elements = Array.from(document.querySelectorAll('*'));
+            
+            for (const el of elements) {
+                const txt = (el.innerText || "").trim();
+                const match = txt.match(/嵯峨野\\s*\\d+号/);
                 if (match) {
-                    const trainName = match[0].replace(/\\s+/g, '');
-                    if (seen.has(trainName)) continue;
-                    
-                    // 向上寻找只包含这趟车信息的最小卡片容器
-                    let card = node.parentElement;
+                    let card = el;
                     while (card && card !== document.body) {
                         const cText = card.innerText || "";
                         if (/\\d{1,2}:\\d{2}/.test(cText) && (cText.includes("空席") || cText.includes("満席") || cText.includes("○") || cText.includes("×") || cText.includes("△"))) {
@@ -83,13 +148,15 @@ def check_date(page, config: dict):
                         }
                         card = card.parentElement;
                     }
-                    
                     if (card && card !== document.body) {
-                        seen.add(trainName);
-                        results.push({
-                            name: trainName,
-                            cardText: card.innerText
-                        });
+                        const name = match[0].replace(/\\s+/g, '');
+                        if (!seen.has(name)) {
+                            seen.add(name);
+                            results.push({
+                                name: name,
+                                text: card.innerText.replace(/\\s+/g, ' ')
+                            });
+                        }
                     }
                 }
             }
@@ -97,20 +164,18 @@ def check_date(page, config: dict):
         }""")
 
         if not train_cards:
-            print(f"⚠️ 未解析到车次卡片，当前页面文字摘要:\n{page.locator('body').inner_text()[:200]}")
+            print(f"⚠️ 仍未解析到车次卡片，当前页面文字摘要:\n{page.locator('body').inner_text()[:300]}")
             return [], target_url
 
         for item in train_cards:
             name = item["name"]
-            c_text = item["cardText"]
+            c_text = item["text"]
             
-            # 卡片中的第一个时间为发车时间
             times = re.findall(r"\b(\d{1,2}:\d{2})\b", c_text)
             if not times:
                 continue
             dep_time = times[0]
             
-            # 状态判定
             is_sold_out = any(k in c_text for k in ["×", "✕", "満席", "完売"])
             is_available = (any(k in c_text for k in ["○", "△", "空席"]) and not is_sold_out)
             
