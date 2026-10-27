@@ -6,7 +6,6 @@ from playwright.sync_api import sync_playwright
 
 BARK_KEY = os.getenv("BARK_KEY", "")
 
-# 监控目标：日期、显示名称、起始时间（包含）
 TARGET_CONFIGS = [
     {"day": "5", "label": "11月05日", "min_hour": 10},
     {"day": "24", "label": "11月24日", "min_hour": 14},
@@ -15,7 +14,6 @@ TARGET_CONFIGS = [
 ACTIVITY_URL = "https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
 
 def send_bark(title: str, content: str, jump_url: str = ""):
-    """向 iPhone 发送 Bark 强提醒"""
     if not BARK_KEY:
         print(f"[提示] 未配置 BARK_KEY: {title} - {content}")
         return
@@ -37,7 +35,6 @@ def check_single_date(context, config: dict) -> list:
     print(f"\n==========================================")
     print(f"【开始检测】{label} (筛选 >= {min_hour}:00 班次，人数: 2人)")
 
-    # 每个日期使用独立的全新页面
     page = context.new_page()
     matched_trains = []
 
@@ -45,7 +42,7 @@ def check_single_date(context, config: dict) -> list:
         page.goto(ACTIVITY_URL, timeout=35000, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
-        # 1. 在日历上检查该日期的真实标识（○ / △ / ×）
+        # 检查日历状态
         cal_info = page.evaluate("""(day) => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (const el of elements) {
@@ -70,29 +67,28 @@ def check_single_date(context, config: dict) -> list:
         mark = cal_info.get("mark", "未知")
         print(f"日历状态确认: {label} 显示为 【{mark}】")
 
-        # 24号为 × 时，直接判定售罄，绝对不产生误报
         if mark in ["×", "✕"]:
-            print(f"❌ {label}：日历明确显示为售罄（×），符合真实页面情况，直接跳过。")
+            print(f"❌ {label}：日历明确显示为售罄（×），跳过。")
             return []
 
-        # 2. 模拟点击日历中的该日期（如 5 号）
-        print(f"🖱️ 点击日历中的 [{day_str}号]...")
+        # 点击日期
+        print(f"🖱️ 尝试点击日历 [{day_str}号]...")
         day_btn = page.locator(f"xpath=//*[text()='{day_str}']/ancestor::*[contains(., '○') or contains(., '△')][1]").last
         if day_btn.count() == 0:
             day_btn = page.locator(f"text='{day_str}'").first
         day_btn.click()
         page.wait_for_timeout(1000)
 
-        # 3. 模拟点击路线：“嵯峨駅／嵐山駅 → 亀岡駅”
-        print("🖱️ 选择路线：【嵯峨駅／嵐山駅 → 亀岡駅】...")
+        # 选择路线
+        print("🖱️ 选择路线：嵯峨駅／嵐山駅 → 亀岡駅...")
         route_btn = page.locator("text=/嵯峨駅.*亀岡駅/").first
         if route_btn.count() == 0:
             route_btn = page.locator("text*='嵯峨'").first
         route_btn.click()
         page.wait_for_timeout(1000)
 
-        # 4. 模拟将大人人数增加至 2 人
-        print("🖱️ 调整人数：将大人增加至 2 人...")
+        # 增加至2人
+        print("🖱️ 调整人数至 2 人...")
         page.evaluate("""() => {
             const labels = Array.from(document.querySelectorAll('*')).filter(e => e.innerText && e.innerText.includes('大人') && e.innerText.includes('12歳'));
             if (labels.length > 0) {
@@ -104,7 +100,6 @@ def check_single_date(context, config: dict) -> list:
                 if (row) {
                     const plusBtn = Array.from(row.querySelectorAll('*')).reverse().find(b => b.innerText && b.innerText.trim() === '+');
                     if (plusBtn) {
-                        // 确保点击增加到 2
                         plusBtn.click();
                         plusBtn.click();
                     }
@@ -113,31 +108,28 @@ def check_single_date(context, config: dict) -> list:
         }""")
         page.wait_for_timeout(1000)
 
-        # 5. 点击底部的【予約手続きへ】进入车次详情
-        print("🖱️ 点击【予約手続きへ】进入列车选择页...")
+        # 点击预约
+        print("🖱️ 点击【予約手続きへ】...")
         submit_btn = page.locator("button:has-text('予約手続きへ'), div:has-text('予約手続きへ')").first
         if submit_btn.count() == 0:
             submit_btn = page.locator("text='今すぐ予約'").first
 
-        old_count = len(context.pages)
+        old_pages_count = len(context.pages)
         submit_btn.click()
-        page.wait_for_timeout(3500)
+        page.wait_for_timeout(4000)
 
-        # 获取活动页面（如果是弹窗则切换到新标签页）
-        target_page = page
-        if len(context.pages) > old_count:
-            target_page = context.pages[-1]
-            target_page.bring_to_front()
+        # 判断是否进入新页面
+        active_page = page
+        if len(context.pages) > old_pages_count:
+            active_page = context.pages[-1]
+            active_page.bring_to_front()
 
-        # 等待车次列表渲染
-        try:
-            target_page.wait_for_selector("text=/嵯峨野\\s*\\d+号|列車を選択してください/", timeout=15000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
+        print(f"👉 当前步骤所在的真实 URL: {active_page.url}")
+        body_snippet = active_page.locator("body").inner_text()[:400].replace("\n", " ")
+        print(f"👉 当前页面文本切片: {body_snippet}")
 
-        # 6. 解析车次卡片状态与发车时间
-        trains_data = target_page.evaluate("""() => {
+        # 解析车次
+        trains_data = active_page.evaluate("""() => {
             const list = [];
             const seen = new Set();
             const allNodes = Array.from(document.querySelectorAll('*'));
@@ -151,9 +143,7 @@ def check_single_date(context, config: dict) -> list:
                     let card = el.parentElement;
                     while (card && card !== document.body) {
                         const cText = card.innerText || "";
-                        if (/\\d{1,2}:\\d{2}/.test(cText) && (cText.includes("○") || cText.includes("△") || cText.includes("×") || cText.includes("✕") || cText.includes("満席"))) {
-                            break;
-                        }
+                        if (/\\d{1,2}:\\d{2}/.test(cText)) break;
                         card = card.parentElement;
                     }
 
@@ -161,15 +151,10 @@ def check_single_date(context, config: dict) -> list:
                         seen.add(name);
                         const cText = card.innerText || "";
                         const times = cText.match(/\\b\\d{1,2}:\\d{2}\\b/g) || [];
-                        const depTime = times[0] || "";
-
-                        const hasCircle = cText.includes("○") || cText.includes("△");
-                        const hasCross = cText.includes("×") || cText.includes("✕") || cText.includes("満席") || card.className.toLowerCase().includes("disabled");
-
                         list.push({
                             name: name,
-                            depTime: depTime,
-                            isAvailable: hasCircle && !hasCross,
+                            depTime: times[0] || "",
+                            isAvailable: (cText.includes("○") || cText.includes("△")) && !(cText.includes("×") || cText.includes("満席")),
                             raw: cText.replace(/\\s+/g, ' ')
                         });
                     }
@@ -178,35 +163,30 @@ def check_single_date(context, config: dict) -> list:
             return list;
         }""")
 
+        print(f"👉 解析到的原始车次数量: {len(trains_data)}")
         for item in trains_data:
             dep_time = item["depTime"]
             name = item["name"]
+            is_avail = item["isAvailable"]
             if not dep_time:
                 continue
-
             try:
                 hour = int(dep_time.split(":")[0])
-            except ValueError:
-                continue
-
-            status_str = "有余票(○/△)" if item["isAvailable"] else "满席(×)"
-
-            if hour >= min_hour:
-                print(f"  -> {dep_time} {name} | 状态: {status_str} | 条件: 符合(>= {min_hour}:00)")
-                if item["isAvailable"]:
+                print(f"  -> {dep_time} {name} | 状态: {'有票(○/△)' if is_avail else '满席(×)'}")
+                if hour >= min_hour and is_avail:
                     matched_trains.append(f"{name}({dep_time}发)")
-            else:
-                print(f"  -> {dep_time} {name} | 状态: {status_str} | 条件: 跳过(早于 {min_hour}:00)")
+            except ValueError:
+                pass
 
     except Exception as e:
-        print(f"[{label}] 排查出现异常: {e}")
+        print(f"[{label}] 异常: {e}")
     finally:
         page.close()
 
     return matched_trains
 
 def run():
-    print("=== 启动嵯峨野小火车余票真实巡查系统 ===")
+    print("=== 启动嵯峨野小火车余票真实巡查系统 (诊断增强版) ===")
     alerts = []
 
     with sync_playwright() as p:
@@ -226,23 +206,14 @@ def run():
             for config in TARGET_CONFIGS:
                 trains = check_single_date(context, config)
                 if trains:
-                    t_str = "、".join(trains)
-                    print(f"🎉【命中有效余票】{config['label']}: {t_str}")
-                    alerts.append(f"{config['label']}: {t_str}")
-                else:
-                    print(f"ℹ️【未见有效余票】{config['label']} 暂无符合时段的空位。")
+                    alerts.append(f"{config['label']}: {'、'.join(trains)}")
 
             if alerts:
                 summary = "；".join(alerts)
-                print(f"\n[触发推送]: {summary}")
-                send_bark(
-                    "岚山小火车有票提醒(2人)",
-                    f"刷出可用班次：{summary}，速登官网预订！",
-                    jump_url=ACTIVITY_URL
-                )
+                print(f"\n🎉 命中余票: {summary}")
+                send_bark("岚山小火车有票提醒(2人)", f"刷出可用班次：{summary}，速登官网预订！", jump_url=ACTIVITY_URL)
             else:
-                print("\n本次巡查结束，两日期在设定时段内均无可用余票。")
-
+                print("\n未检测到符合条件的余票。")
         finally:
             browser.close()
 
