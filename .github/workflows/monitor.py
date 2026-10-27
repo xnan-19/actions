@@ -6,10 +6,13 @@ from playwright.sync_api import sync_playwright
 
 BARK_KEY = os.getenv("BARK_KEY", "")
 
+# 监控目标配置
 TARGET_CONFIGS = [
-    {"date": "2026-11-05", "label": "11月05日", "min_hour": 10},
-    {"date": "2026-11-24", "label": "11月24日", "min_hour": 14},
+    {"day": "5", "date": "2026-11-05", "label": "11月05日", "min_hour": 10},
+    {"day": "24", "date": "2026-11-24", "label": "11月24日", "min_hour": 14},
 ]
+
+CALENDAR_URL = "https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
 
 def build_direct_url(date_str: str) -> str:
     base_url = "https://file.sagano.linktivity.io/seat/51/down"
@@ -17,7 +20,7 @@ def build_direct_url(date_str: str) -> str:
         "lang": "ja",
         "date": date_str,
         "unitsCount": "2",
-        "backUrl": "https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL",
+        "backUrl": CALENDAR_URL,
         "redirectUrl": "https://ars-saganokanko.triplabo.jp/booking/pay",
         "currentStep": "station"
     }
@@ -36,9 +39,44 @@ def send_bark(title: str, content: str, jump_url: str = ""):
     except Exception as e:
         print(f"Bark 推送失败: {e}")
 
+def check_calendar_status(page) -> dict:
+    """第一道防线：读取主页日历状态（○ 有票，△ 紧张，× 售罄）"""
+    print(">>> 正在访问官网日历核验每日总状态...")
+    page.goto(CALENDAR_URL, timeout=45000, wait_until="networkidle")
+    page.wait_for_timeout(2500)
+
+    # 提取日历中各天的符号
+    calendar_data = page.evaluate("""() => {
+        const statusMap = {};
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const el of allElements) {
+            const text = (el.innerText || "").trim();
+            // 匹配格式如：日期数字紧跟状态符号，或同一单元格内包含日期和符号
+            if (el.children.length === 0 && text) {
+                // 向上两层寻找日历格子
+                const parent = el.parentElement;
+                const grand = parent ? parent.parentElement : null;
+                const containerText = ((parent ? parent.innerText : "") + " " + (grand ? grand.innerText : "")).replace(/\\s+/g, ' ');
+                
+                for (let d = 1; d <= 31; d++) {
+                    const regex = new RegExp('(?:^|\\\\s)' + d + '(?:\\\\s+|$)');
+                    if (regex.test(containerText)) {
+                        if (containerText.includes('○')) statusMap[d.toString()] = '○';
+                        else if (containerText.includes('△')) statusMap[d.toString()] = '△';
+                        else if (containerText.includes('×') || containerText.includes('✕')) {
+                            if (!statusMap[d.toString()]) statusMap[d.toString()] = '×';
+                        }
+                    }
+                }
+            }
+        }
+        return statusMap;
+    }""")
+    print(f"日历状态抓取结果: {calendar_data}")
+    return calendar_data
+
 def handle_station_selection(page):
-    """自动完成乘降车站选择并进入车次列表"""
-    # 1. 尝试原生 select
+    """自动完成车站选择并推进到车次详情"""
     selects = page.locator("select").all()
     if len(selects) >= 2:
         try:
@@ -47,157 +85,119 @@ def handle_station_selection(page):
         except Exception:
             pass
 
-    # 2. 自定义下拉选择框处理：乗車駅
+    # 处理自定义下拉
     dep_btn = page.locator("text='乗車駅を選択してください'").first
     if dep_btn.count() > 0 and dep_btn.is_visible():
         try:
-            dep_btn.click(timeout=3000)
+            dep_btn.click(timeout=2000)
         except Exception:
-            dep_btn.locator("..").click(timeout=3000)
-        page.wait_for_timeout(600)
-        
-        # 选中 トロッコ嵯峨
-        try:
-            page.locator("text='トロッコ嵯峨'").last.click(timeout=3000)
-        except Exception:
-            page.evaluate("""() => {
-                const el = Array.from(document.querySelectorAll('*')).reverse().find(e => e.innerText && e.innerText.trim() === 'トロッコ嵯峨');
-                if (el) el.click();
-            }""")
-        page.wait_for_timeout(600)
+            dep_btn.locator("..").click(timeout=2000)
+        page.wait_for_timeout(500)
+        page.locator("text='トロッコ嵯峨'").last.click(timeout=2000)
+        page.wait_for_timeout(500)
 
-    # 3. 自定义下拉选择框处理：降車駅
     arr_btn = page.locator("text='降車駅を選択してください'").first
     if arr_btn.count() > 0 and arr_btn.is_visible():
         try:
-            arr_btn.click(timeout=3000)
+            arr_btn.click(timeout=2000)
         except Exception:
-            arr_btn.locator("..").click(timeout=3000)
-        page.wait_for_timeout(600)
-        
-        # 选中 トロッコ亀岡
-        try:
-            page.locator("text='トロッコ亀岡'").last.click(timeout=3000)
-        except Exception:
-            page.evaluate("""() => {
-                const el = Array.from(document.querySelectorAll('*')).reverse().find(e => e.innerText && e.innerText.trim() === 'トロッコ亀岡');
-                if (el) el.click();
-            }""")
-        page.wait_for_timeout(600)
+            arr_btn.locator("..").click(timeout=2000)
+        page.wait_for_timeout(500)
+        page.locator("text='トロッコ亀岡'").last.click(timeout=2000)
+        page.wait_for_timeout(500)
 
-    # 4. 点击【次へ】推进到车次列表
-    next_btn = page.locator("button:has-text('次へ'), [role='button']:has-text('次へ'), div:has-text('次へ')").last
+    next_btn = page.locator("button:has-text('次へ'), div:has-text('次へ')").last
     if next_btn.count() > 0 and next_btn.is_visible():
-        print("✔ 车站已选定，点击【次へ】进入列车选择页...")
-        try:
-            next_btn.click(timeout=3000)
-        except Exception:
-            page.evaluate("""() => {
-                const btns = Array.from(document.querySelectorAll('button, div, a'));
-                const btn = btns.reverse().find(b => b.innerText && b.innerText.trim() === '次へ');
-                if (btn) btn.click();
-            }""")
+        next_btn.click(timeout=3000)
         page.wait_for_timeout(3000)
 
-def check_date(page, config: dict):
+def check_train_details(page, config: dict) -> list:
+    """第二道防线：精准解析车次与 ○ / △ 状态"""
     date_str = config["date"]
     label = config["label"]
     min_hour = config["min_hour"]
     target_url = build_direct_url(date_str)
 
-    print(f"\n==========================================")
-    print(f"正在检测: {label} (筛选 >= {min_hour}:00 班次，2 人票)")
-    print(f"访问地址: {target_url}")
+    page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
+    page.wait_for_timeout(2000)
 
-    matched_trains = []
+    if "乗車駅を選択してください" in page.content() or page.locator("text='次へ'").count() > 0:
+        handle_station_selection(page)
 
     try:
-        page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+        page.wait_for_selector("text=/嵯峨野\\s*\\d+号/", timeout=10000)
+    except Exception:
+        page.wait_for_timeout(2000)
 
-        # 检查是否需要选择车站并点击“次へ”
-        if "乗車駅を選択してください" in page.content() or page.locator("text='次へ'").count() > 0:
-            handle_station_selection(page)
+    # 提取真实 DOM 中的列车卡片
+    cards_data = page.evaluate("""() => {
+        const results = [];
+        const seen = new Set();
+        const allEls = Array.from(document.querySelectorAll('*'));
+        
+        for (const el of allEls) {
+            const txt = (el.innerText || "").trim();
+            const match = txt.match(/^嵯峨野\\s*\\d+号$/);
+            if (match) {
+                const name = match[0].replace(/\\s+/g, '');
+                if (seen.has(name)) continue;
 
-        # 等待列车列表渲染出来
-        try:
-            page.wait_for_selector("text=/嵯峨野\\s*\\d+号/", timeout=15000)
-        except Exception:
-            page.wait_for_timeout(3000)
+                // 寻找包含发车时间的卡片父容器
+                let card = el.parentElement;
+                while (card && card !== document.body) {
+                    const cText = card.innerText || "";
+                    if (/\\d{1,2}:\\d{2}/.test(cText)) break;
+                    card = card.parentElement;
+                }
 
-        # 模拟向下滚动，加载全天所有班次
-        for _ in range(4):
-            page.evaluate("window.scrollBy(0, 800)")
-            page.wait_for_timeout(300)
+                if (card && card !== document.body) {
+                    seen.add(name);
+                    const cardText = card.innerText || "";
+                    const cardHtml = card.innerHTML || "";
+                    
+                    // 严格检测：必须包含 ○ 或 △，且不能包含 ×、✕、満席、disabled
+                    const hasCircle = cardText.includes("○") || cardText.includes("△") || cardHtml.includes("circle");
+                    const hasCross = cardText.includes("×") || cardText.includes("✕") || cardText.includes("✖") || 
+                                     cardText.includes("満席") || cardText.includes("完売") ||
+                                     card.className.toLowerCase().includes("disabled") ||
+                                     card.getAttribute("disabled") !== null;
 
-        # 解析车次卡片
-        train_cards = page.evaluate("""() => {
-            const results = [];
-            const seen = new Set();
-            const elements = Array.from(document.querySelectorAll('*'));
-            
-            for (const el of elements) {
-                const txt = (el.innerText || "").trim();
-                const match = txt.match(/嵯峨野\\s*\\d+号/);
-                if (match) {
-                    let card = el;
-                    while (card && card !== document.body) {
-                        const cText = card.innerText || "";
-                        if (/\\d{1,2}:\\d{2}/.test(cText) && (cText.includes("空席") || cText.includes("満席") || cText.includes("○") || cText.includes("×") || cText.includes("△"))) {
-                            break;
-                        }
-                        card = card.parentElement;
-                    }
-                    if (card && card !== document.body) {
-                        const name = match[0].replace(/\\s+/g, '');
-                        if (!seen.has(name)) {
-                            seen.add(name);
-                            results.push({
-                                name: name,
-                                text: card.innerText.replace(/\\s+/g, ' ')
-                            });
-                        }
-                    }
+                    results.push({
+                        name: name,
+                        rawText: cardText.replace(/\\s+/g, ' '),
+                        hasCircle: hasCircle,
+                        hasCross: hasCross
+                    });
                 }
             }
-            return results;
-        }""")
+        }
+        return results;
+    }""")
 
-        if not train_cards:
-            print(f"⚠️ 仍未解析到车次卡片，当前页面文字摘要:\n{page.locator('body').inner_text()[:300]}")
-            return [], target_url
+    matched = []
+    for item in cards_data:
+        raw = item["rawText"]
+        name = item["name"]
+        times = re.findall(r"\b(\d{1,2}:\d{2})\b", raw)
+        if not times:
+            continue
+        dep_time = times[0]
+        hour = int(dep_time.split(":")[0])
 
-        for item in train_cards:
-            name = item["name"]
-            c_text = item["text"]
-            
-            times = re.findall(r"\b(\d{1,2}:\d{2})\b", c_text)
-            if not times:
-                continue
-            dep_time = times[0]
-            
-            is_sold_out = any(k in c_text for k in ["×", "✕", "満席", "完売"])
-            is_available = (any(k in c_text for k in ["○", "△", "空席"]) and not is_sold_out)
-            
-            status_desc = "有余票" if is_available else "无票/满席"
-            print(f"  [{label}] 班次: {dep_time} {name} | 状态: {status_desc}")
+        # 真正有票的标准：有圈/三角，且绝无叉号/禁用
+        is_truly_available = item["hasCircle"] and not item["hasCross"]
+        status_text = "有余票(○/△)" if is_truly_available else "无票/满席(×)"
+        print(f"  [{label}] 班次: {dep_time} {name} | 状态: {status_text} | 原始摘要: {raw[:40]}")
 
-            try:
-                hour = int(dep_time.split(":")[0])
-                if hour >= min_hour and is_available:
-                    matched_trains.append(f"{dep_time}({name})")
-            except ValueError:
-                pass
+        if hour >= min_hour and is_truly_available:
+            matched.append(f"{dep_time}({name})")
 
-    except Exception as e:
-        print(f"[{label}] 抓取异常: {e}")
-
-    return matched_trains, target_url
+    return matched
 
 def run():
-    print("=== 启动嵯峨野小火车余票检测（直连 Linktivity 2人通道） ===")
+    print("=== 启动嵯峨野小火车严谨余票巡查 ===")
     alerts = []
-    jump_link = ""
+    first_jump_url = CALENDAR_URL
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -211,24 +211,43 @@ def run():
         page = context.new_page()
 
         try:
-            for config in TARGET_CONFIGS:
-                matched, direct_url = check_date(page, config)
-                if matched:
-                    slots_str = "、".join(matched)
-                    alerts.append(f"{config['label']}: {slots_str}")
-                    if not jump_link:
-                        jump_link = direct_url
+            # 1. 第一步先查日历总表
+            calendar_status = check_calendar_status(page)
 
+            for config in TARGET_CONFIGS:
+                day_key = config["day"]
+                label = config["label"]
+                cal_symbol = calendar_status.get(day_key, "未知")
+
+                print(f"\n------------------------------------------")
+                print(f"排查目标: {label} (日历当前标记: 【{cal_symbol}】)")
+
+                # 如果日历明确显示 ×（满席），坚决不进详情页，避免任何误报
+                if cal_symbol in ["×", "✕"]:
+                    print(f"❌ {label} 日历明确显示为售罄（×），跳过车次检索，确定无票。")
+                    continue
+
+                # 只有日历显示 ○ 或 △ 时，才进一步进入车次列表核查时间段
+                print(f"✔ {label} 日历显示有位（{cal_symbol}），深入检索符合时段的车次...")
+                matched_trains = check_train_details(page, config)
+
+                if matched_trains:
+                    slots_str = "、".join(matched_trains)
+                    print(f"🎉 {label} 命中有效车次: {slots_str}")
+                    alerts.append(f"{label}: {slots_str}")
+                    if first_jump_url == CALENDAR_URL:
+                        first_jump_url = build_direct_url(config["date"])
+                else:
+                    print(f"ℹ️ {label} 虽有余位，但未在要求时段（>={config['min_hour']}:00）找到符合车次。")
+
+            # 汇总推送
             if alerts:
-                summary = "；".join(alerts)
-                print(f"\n🎉 抓到目标余票: {summary}")
-                send_bark(
-                    "岚山小火车有票提醒(2人)",
-                    f"刷出可用班次：{summary}，点击立刻选座！",
-                    jump_url=jump_link
-                )
+                content = "；".join(alerts)
+                print(f"\n[真实余票报警]: {content}")
+                send_bark("岚山小火车有票提醒", f"刷出可用班次：{content}，速去选座！", jump_url=first_jump_url)
             else:
-                print("\n本次巡查结束，未发现符合时段要求的余票。")
+                print("\n本次巡查结束：未发现符合时段的有效余票。")
+
         finally:
             browser.close()
 
