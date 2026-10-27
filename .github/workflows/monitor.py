@@ -55,4 +55,6 @@ def run():
             browser.close()
 
 if __name__ == "__main__":
+    # 加这一行测试：一运行就给手机发一条
+    send_bark("云端连通测试", "恭喜！GitHub 到 Bark 的推送完全打通了！")
     run()
