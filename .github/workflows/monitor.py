@@ -52,52 +52,77 @@ def check_date(page, config: dict):
     matched_trains = []
 
     try:
-        page.goto(target_url, timeout=35000, wait_until="networkidle")
-        # 等待车次卡片加载完成
+        page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
+        
+        # 等待页面车次列表区域加载
         try:
-            page.wait_for_selector("text=/嵯峨野\\s*\\d+号/", timeout=10000)
+            page.wait_for_selector("text=列車を選択してください", timeout=15000)
         except Exception:
-            page.wait_for_timeout(3000)
+            pass
+        page.wait_for_timeout(3000)
 
-        # 抓取页面上包含车次信息的所有卡片
+        # 通过 TreeWalker 精准定位每趟车，互不干扰
         train_cards = page.evaluate("""() => {
-            const list = [];
-            const elements = document.querySelectorAll('*');
-            for (const el of elements) {
-                const text = el.innerText || "";
-                // 精准匹配包含列车名、时间与状态的容器块
-                if (/嵯峨野\\s*\\d+号/.test(text) && /\\d{1,2}:\\d{2}/.test(text) && (text.includes("○") || text.includes("×") || text.includes("△") || text.includes("空席") || text.includes("満席"))) {
-                    // 只取最内层的独立车次块
-                    if (!el.querySelector('*[class*="train"], *[class*="seat"], div') || el.children.length <= 6) {
-                        list.push(text.replace(/\\s+/g, ' ').trim());
+            const results = [];
+            const seen = new Set();
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while (node = walker.nextNode()) {
+                const text = node.nodeValue.trim();
+                const match = text.match(/嵯峨野\\s*\\d+号/);
+                if (match) {
+                    const trainName = match[0].replace(/\\s+/g, '');
+                    if (seen.has(trainName)) continue;
+                    
+                    // 向上寻找只包含这趟车信息的最小卡片容器
+                    let card = node.parentElement;
+                    while (card && card !== document.body) {
+                        const cText = card.innerText || "";
+                        if (/\\d{1,2}:\\d{2}/.test(cText) && (cText.includes("空席") || cText.includes("満席") || cText.includes("○") || cText.includes("×") || cText.includes("△"))) {
+                            break;
+                        }
+                        card = card.parentElement;
+                    }
+                    
+                    if (card && card !== document.body) {
+                        seen.add(trainName);
+                        results.push({
+                            name: trainName,
+                            cardText: card.innerText
+                        });
                     }
                 }
             }
-            return Array.from(new Set(list));
+            return results;
         }""")
 
-        seen_slots = set()
-        for text in train_cards:
-            times = re.findall(r"\b(\d{1,2}:\d{2})\b", text)
-            train_names = re.findall(r"嵯峨野\s*\d+号", text)
-            if not times or not train_names:
-                continue
+        if not train_cards:
+            print(f"⚠️ 未解析到车次卡片，当前页面文字摘要:\n{page.locator('body').inner_text()[:200]}")
+            return [], target_url
 
+        for item in train_cards:
+            name = item["name"]
+            c_text = item["cardText"]
+            
+            # 卡片中的第一个时间为发车时间
+            times = re.findall(r"\b(\d{1,2}:\d{2})\b", c_text)
+            if not times:
+                continue
             dep_time = times[0]
-            train_name = train_names[0]
-            slot_key = f"{dep_time}_{train_name}"
-            if slot_key in seen_slots:
-                continue
-            seen_slots.add(slot_key)
+            
+            # 状态判定
+            is_sold_out = any(k in c_text for k in ["×", "✕", "満席", "完売"])
+            is_available = (any(k in c_text for k in ["○", "△", "空席"]) and not is_sold_out)
+            
+            status_desc = "有余票" if is_available else "无票/满席"
+            print(f"  [{label}] 班次: {dep_time} {name} | 状态: {status_desc}")
 
-            hour = int(dep_time.split(":")[0])
-            is_sold_out = any(k in text for k in ["×", "✕", "満席", "完売"])
-            is_available = (any(k in text for k in ["○", "△", "空席"]) and not is_sold_out)
-
-            print(f"  [{label}] 班次: {dep_time} {train_name} | 状态: {'有余票' if is_available else '无票/满席'}")
-
-            if hour >= min_hour and is_available:
-                matched_trains.append(f"{dep_time}({train_name})")
+            try:
+                hour = int(dep_time.split(":")[0])
+                if hour >= min_hour and is_available:
+                    matched_trains.append(f"{dep_time}({name})")
+            except ValueError:
+                pass
 
     except Exception as e:
         print(f"[{label}] 抓取异常: {e}")
