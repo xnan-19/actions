@@ -20,4 +20,4 @@ jobs:
       - name: Run ticket monitor
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
-        run: python monitor.py
+        run: run: python .github/workflows/monitor.py
