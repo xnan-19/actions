@@ -2,6 +2,7 @@ name: Sagano Ticket Watcher
 
 on:
   schedule:
+    # 严格每 30 分钟定时触发一次
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -24,13 +25,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run ticket monitor (Loop 25 mins with auto-heal)
+      - name: Run ticket monitor
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
-        run: |
-          end_time=$((SECONDS + 25 * 60))
-          while [ $SECONDS -lt $end_time ]; do
-            # 增加 || true 容灾保护，即便单次脚本偶发异常退出，容器绝不中断，60秒后自动重新拉起
-            python .github/workflows/monitor.py || echo "⚠️ 单次巡查遇到偶发网络故障，已触发自愈，将在下轮自动重试..."
-            sleep 60
-          done
+        run: python .github/workflows/monitor.py
