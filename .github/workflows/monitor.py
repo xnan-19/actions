@@ -72,7 +72,6 @@ def get_train_vacant_seats(date_str: str, service_id: str) -> list:
             c_id = car.get("logical_car_id", "")
             c_name = car.get("physical_car_name", f"{c_id}号车")
             for arr in car.get("arrangements", []):
-                # 修复截断语法
                 if arr.get("arrangement_state") == "ARRANGEABLE" and arr.get("reservation_state") == "VACANT":
                     vacant_seats.append({
                         "logical_car_id": str(c_id),
@@ -168,15 +167,15 @@ def process_nov_05():
     else:
         print("  11月05日暂无 >= 10:00 可用车次。")
 
-# ================= 业务 2: 11月12日 =================
-def process_nov_12():
-    date_str = "2026-11-12"
-    print(f"\n--- 11月12日（多车次随机抽选，仅锁2人座）---")
+# ================= 业务 2: 11月10日 =================
+def process_nov_10():
+    date_str = "2026-11-10"
+    print(f"\n--- 11月10日（多车次随机抽选，仅锁2人座）---")
     services = query_services(date_str)
     avail_services = [s for s in services if s.get("available") and s.get("before_deadline")]
 
     if not avail_services:
-        print("  11月12日暂无可用车次。")
+        print("  11月10日暂无可用车次。")
         return
 
     random.shuffle(avail_services)
@@ -196,7 +195,7 @@ def process_nov_12():
             
             print(f"  ✔ 选中 [{t_name} {dep_time}]，分配座位: {seats_desc}")
             send_bark(
-                "🎉 岚山小火车【11月12日】已选座",
+                "🎉 岚山小火车【11月10日】已选座",
                 f"已选中 {t_name}({dep_time}发)，座位: {seats_desc}。轻点直接进入订单支付！",
                 jump_url=pay_url
             )
@@ -208,9 +207,9 @@ def process_nov_12():
 
     # 如果所有车次都仅剩 1 张票，仅提示不发链接
     if single_seat_services:
-        print("  ⚠️ 11月12日仅余单张票，不满足 2 人需求。")
-        msg = f"11月12日仅余单张票（{'、'.join(single_seat_services)} 各剩1席），不足2人，未选座。"
-        send_bark("⚠️ 岚山小火车【11月12日】仅余单张票", msg, jump_url="")
+        print("  ⚠️ 11月10日仅余单张票，不满足 2 人需求。")
+        msg = f"11月10日仅余单张票（{'、'.join(single_seat_services)} 各剩1席），不足2人，未选座。"
+        send_bark("⚠️ 岚山小火车【11月10日】仅余单张票", msg, jump_url="")
 
 # ================= 业务 3: 11月24日 =================
 def process_nov_24():
@@ -257,7 +256,7 @@ def run():
     print(f"=== 嵯峨野小火车定时巡检 === 当前北京时间: {bj_time_str} {status_tag}")
     
     process_nov_05()
-    process_nov_12()
+    process_nov_10()
     process_nov_24()
 
 if __name__ == "__main__":
