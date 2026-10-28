@@ -1,5 +1,4 @@
 import os
-import uuid
 import random
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -33,8 +32,21 @@ def is_beijing_quiet_hours() -> tuple:
     is_quiet = (hour >= 22 or hour < 7)
     return is_quiet, bj_now.strftime("%Y-%m-%d %H:%M:%S")
 
+def build_valid_booking_url(date_str: str) -> str:
+    """生成允许外部冷启动、绝不跳回 Home 页的直达选座链接"""
+    base_url = "https://file.sagano.linktivity.io/seat/51/down"
+    params = {
+        "lang": "ja",
+        "date": date_str,
+        "unitsCount": "2",
+        "backUrl": MAIN_PAGE_URL,
+        "redirectUrl": "https://ars-saganokanko.triplabo.jp/booking/pay",
+        "currentStep": "station"
+    }
+    return f"{base_url}?{urllib.parse.urlencode(params)}"
+
 def send_bark(title: str, content: str, jump_url: str = "") -> bool:
-    """向 iPhone 发送 Bark 强提醒，包含免打扰过滤与自动重试"""
+    """向 iPhone 发送 Bark 强提醒（含夜间过滤与 3 次重试）"""
     is_quiet, bj_time_str = is_beijing_quiet_hours()
     if is_quiet:
         print(f"  🌙 [夜间免打扰] 当前北京时间 {bj_time_str}，处于 22:00~07:00 静音期，取消推送。")
@@ -85,44 +97,6 @@ def get_train_vacant_seats(date_str: str, service_id: str) -> list:
         print(f"  获取车次 {service_id} 座位异常: {e}")
         return []
 
-def lock_two_seats(date_str: str, service_id: str, seats: list) -> str:
-    """调用官方接口预留锁座，并返回直接跳转到输入信息与支付倒计时的订单链接"""
-    lock_url = "https://common-api.sagano.linktivity.io/v1/reservations/check"
-    payload = {
-        "product_id": "51",
-        "from_station_id": "1",
-        "service": {
-            "service_day": date_str,
-            "service_id": str(service_id),
-            "manual": {
-                "seats": [
-                    {
-                        "logical_car_id": s["logical_car_id"],
-                        "seat_group_id": s["seat_group_id"],
-                        "seat_id": s["seat_id"],
-                        "arrangement_type_id": s["arrangement_type_id"]
-                    }
-                    for s in seats
-                ]
-            },
-            "mutation_id": str(uuid.uuid4())
-        }
-    }
-    try:
-        requests.post(lock_url, headers=HEADERS, json=payload, timeout=8)
-    except Exception:
-        pass
-
-    seats_param = ",".join([
-        f"{s['logical_car_id']}-{s['seat_group_id']}-{s['seat_id']}-{s['arrangement_type_id']}"
-        for s in seats
-    ])
-    return (
-        f"https://ars-saganokanko.triplabo.jp/booking/pay?"
-        f"fromStationId=1&toStationId=4&serviceId={service_id}&seats={seats_param}"
-        f"&step=input_info&activityID=LINKTIVITY-YRBTL&lang=ja"
-    )
-
 def query_services(date_str: str) -> list:
     payload = {
         "date": date_str,
@@ -142,7 +116,7 @@ def query_services(date_str: str) -> list:
 # ================= 业务 1: 11月05日 =================
 def process_nov_05():
     date_str = "2026-11-05"
-    print(f"\n--- 11月05日（仅提示 >= 10:00 有票车次）---")
+    print(f"\n--- 11月05日（提示 >= 10:00 可用车次）---")
     services = query_services(date_str)
     avail_trains = []
     for s in services:
@@ -158,12 +132,12 @@ def process_nov_05():
     if avail_trains:
         trains_text = "、".join(avail_trains)
         print(f"  ✔ 可用车次: {trains_text}")
-        list_url = (
-            f"https://file.sagano.linktivity.io/seat/51/down?lang=ja&date={date_str}"
-            f"&unitsCount=2&backUrl={urllib.parse.quote(MAIN_PAGE_URL)}"
-            f"&redirectUrl=https%3A%2F%2Fars-saganokanko.triplabo.jp%2Fbooking%2Fpay&currentStep=station"
+        direct_url = build_valid_booking_url(date_str)
+        send_bark(
+            "🎉 岚山小火车【11月05日】有票提醒", 
+            f"可用车次：{trains_text}。轻点直接进入选座！", 
+            jump_url=direct_url
         )
-        send_bark("🎉 岚山小火车【11月05日】有票提醒", f"可用车次：{trains_text}。轻点进入车次列表查看！", jump_url=list_url)
     else:
         print("  11月05日暂无 >= 10:00 可用车次。")
 
@@ -187,17 +161,17 @@ def process_nov_10():
         dep_time = s.get("departure_hhmm", "")
         vacant_seats = get_train_vacant_seats(date_str, s_id)
 
-        # 选中的车次满足 >= 2 个座位，随机选座并锁定至支付页
+        # 选中的车次满足 >= 2 个座位
         if len(vacant_seats) >= 2:
             chosen = random.sample(vacant_seats, 2)
             seats_desc = f"{chosen[0]['car_name']}{chosen[0]['seat_group_id']}{chosen[0]['seat_id']}、{chosen[1]['car_name']}{chosen[1]['seat_group_id']}{chosen[1]['seat_id']}"
-            pay_url = lock_two_seats(date_str, s_id, chosen)
+            direct_url = build_valid_booking_url(date_str)
             
-            print(f"  ✔ 选中 [{t_name} {dep_time}]，分配座位: {seats_desc}")
+            print(f"  ✔ 选中 [{t_name} {dep_time}]，分配推荐座位: {seats_desc}")
             send_bark(
-                "🎉 岚山小火车【11月10日】已选座",
-                f"已选中 {t_name}({dep_time}发)，座位: {seats_desc}。轻点直接进入订单支付！",
-                jump_url=pay_url
+                "🎉 岚山小火车【11月10日】有2人票",
+                f"优选车次：{t_name}({dep_time}发)，推荐座位: {seats_desc}。轻点进入快速选座！",
+                jump_url=direct_url
             )
             return
 
@@ -208,7 +182,7 @@ def process_nov_10():
     # 如果所有车次都仅剩 1 张票，仅提示不发链接
     if single_seat_services:
         print("  ⚠️ 11月10日仅余单张票，不满足 2 人需求。")
-        msg = f"11月10日仅余单张票（{'、'.join(single_seat_services)} 各剩1席），不足2人，未选座。"
+        msg = f"11月10日仅余单张票（{'、'.join(single_seat_services)} 各剩1席），不足2人，暂不预留。"
         send_bark("⚠️ 岚山小火车【11月10日】仅余单张票", msg, jump_url="")
 
 # ================= 业务 3: 11月24日 =================
@@ -238,13 +212,13 @@ def process_nov_24():
         if len(vacant_seats) >= 2:
             chosen = random.sample(vacant_seats, 2)
             seats_desc = f"{chosen[0]['car_name']}{chosen[0]['seat_group_id']}{chosen[0]['seat_id']}、{chosen[1]['car_name']}{chosen[1]['seat_group_id']}{chosen[1]['seat_id']}"
-            pay_url = lock_two_seats(date_str, s_id, chosen)
+            direct_url = build_valid_booking_url(date_str)
 
-            print(f"  🎉 11月24日命中并成功锁座: {t_name}({dep_time}) | {seats_desc}")
+            print(f"  🎉 11月24日黄金时段命中: {t_name}({dep_time}) | 推荐座: {seats_desc}")
             send_bark(
                 "🎉 岚山小火车【11月24日】抢到2人票！",
-                f"已锁定黄金时段 {t_name}({dep_time}发)，座位: {seats_desc}。轻点立即前往付款！",
-                jump_url=pay_url
+                f"命中黄金时段 {t_name}({dep_time}发)，推荐座位: {seats_desc}。轻点立即锁定！",
+                jump_url=direct_url
             )
             return
         else:
