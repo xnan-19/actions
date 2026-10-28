@@ -2,7 +2,7 @@ name: Sagano Ticket Watcher
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # 每 30 分钟尝试启动一次容器
+    - cron: '*/30 * * * *'  # 每 30 分钟触发一次
   workflow_dispatch:
 
 jobs:
@@ -24,12 +24,8 @@ jobs:
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
         run: |
-          # 每次运行持续 25 分钟，每 45 秒检测一次，彻底规避 GitHub 丢任务
-          python -c "
-          import time
-          from monitor import run
-          end_time = time.time() + 25 * 60
-          while time.time() < end_time:
-              run()
-              time.sleep(45)
-          "
+          end_time=$((SECONDS + 25 * 60))
+          while [ $SECONDS -lt $end_time ]; do
+            python .github/workflows/monitor.py
+            sleep 45
+          done
