@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 
 BARK_KEY = os.getenv("BARK_KEY", "")
 
+# 监控目标：日期、显示名称、起始时间（包含）
 TARGET_CONFIGS = [
     {"day": "5", "label": "11月05日", "min_hour": 10},
     {"day": "24", "label": "11月24日", "min_hour": 14},
@@ -14,6 +15,7 @@ TARGET_CONFIGS = [
 ACTIVITY_URL = "https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
 
 def send_bark(title: str, content: str, jump_url: str = ""):
+    """向 iPhone 发送 Bark 强提醒"""
     if not BARK_KEY:
         print(f"[提示] 未配置 BARK_KEY: {title} - {content}")
         return
@@ -26,6 +28,40 @@ def send_bark(title: str, content: str, jump_url: str = ""):
         print(f"Bark 推送状态: {resp.status_code}")
     except Exception as e:
         print(f"Bark 推送失败: {e}")
+
+def ensure_november_calendar(page):
+    """确保日历翻页切换到 11 月"""
+    for _ in range(5):
+        current_month = page.locator(".DateTable_dateTableCurrent_r3SWS").first.inner_text()
+        if "11月" in current_month:
+            print("✔ 已定位到 11 月日历！")
+            return True
+        print(f"当前月份显示为 [{current_month.strip()}]，点击向右箭头切换至 11 月...")
+        next_btn = page.locator(".DateTable_dateTableNext_P9obZ").first
+        if next_btn.count() > 0:
+            next_btn.click()
+            page.wait_for_timeout(1000)
+        else:
+            break
+    return "11月" in page.locator(".DateTable_dateTableCurrent_r3SWS").first.inner_text()
+
+def get_day_status(page, day_str: str) -> tuple:
+    """根据真实 DOM 中的 SVG 图标（#icon-circle, #icon-triangle, #icon-close）提取状态"""
+    day_button = page.locator(f".DateTable_dateTableDayButton_RqCPN:has(span:text-is('{day_str}'))").first
+    if day_button.count() == 0:
+        return "未找到", None
+
+    is_disabled = day_button.get_attribute("disabled") is not None
+    svg_use = day_button.locator("use").first
+    icon_href = svg_use.get_attribute("xlink:href") or svg_use.get_attribute("href") or ""
+
+    if "#icon-circle" in icon_href:
+        return "○", day_button
+    elif "#icon-triangle" in icon_href:
+        return "△", day_button
+    elif "#icon-close" in icon_href or is_disabled:
+        return "×", day_button
+    return "未知", day_button
 
 def check_single_date(context, config: dict) -> list:
     day_str = config["day"]
@@ -40,122 +76,112 @@ def check_single_date(context, config: dict) -> list:
 
     try:
         page.goto(ACTIVITY_URL, timeout=35000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_selector(".DateTable_dateTableCurrent_r3SWS", timeout=15000)
+        page.wait_for_timeout(1500)
 
-        # 检查日历状态
-        cal_info = page.evaluate("""(day) => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (const el of elements) {
-                if (el.children.length === 0 && el.innerText.trim() === day) {
-                    let parent = el.parentElement;
-                    while (parent && parent !== document.body) {
-                        const txt = parent.innerText || '';
-                        if (txt.includes('○') || txt.includes('△') || txt.includes('×') || txt.includes('✕')) {
-                            let mark = '未知';
-                            if (txt.includes('○')) mark = '○';
-                            else if (txt.includes('△')) mark = '△';
-                            else if (txt.includes('×') || txt.includes('✕')) mark = '×';
-                            return { found: true, mark: mark };
-                        }
-                        parent = parent.parentElement;
-                    }
-                }
-            }
-            return { found: false, mark: '未知' };
-        }""", day_str)
-
-        mark = cal_info.get("mark", "未知")
-        print(f"日历状态确认: {label} 显示为 【{mark}】")
-
-        if mark in ["×", "✕"]:
-            print(f"❌ {label}：日历明确显示为售罄（×），跳过。")
+        # 1. 确保翻到 11 月日历
+        if not ensure_november_calendar(page):
+            print("❌ 无法切换到 11 月日历")
             return []
 
-        # 点击日期
-        print(f"🖱️ 尝试点击日历 [{day_str}号]...")
-        day_btn = page.locator(f"xpath=//*[text()='{day_str}']/ancestor::*[contains(., '○') or contains(., '△')][1]").last
-        if day_btn.count() == 0:
-            day_btn = page.locator(f"text='{day_str}'").first
+        # 2. 检查当天在 11 月日历上的真实 SVG 状态
+        status, day_btn = get_day_status(page, day_str)
+        print(f"日历状态确认: {label} 真实标识为 【{status}】")
+
+        if status == "×":
+            print(f"❌ {label}：日历明确显示为售罄（×），直接跳过。")
+            return []
+        elif status not in ["○", "△"]:
+            print(f"⚠️ {label} 状态非空席（{status}），跳过。")
+            return []
+
+        # 3. 点击该日期
+        print(f"🖱️ 点击 11 月日历中的 [{day_str}号]...")
         day_btn.click()
         page.wait_for_timeout(1000)
 
-        # 选择路线
+        # 4. 选择路线：嵯峨駅／嵐山駅 → 亀岡駅
         print("🖱️ 选择路线：嵯峨駅／嵐山駅 → 亀岡駅...")
-        route_btn = page.locator("text=/嵯峨駅.*亀岡駅/").first
-        if route_btn.count() == 0:
-            route_btn = page.locator("text*='嵯峨'").first
+        route_btn = page.locator(".PlanPicker_planPicker_KCJLc:has-text('嵯峨駅')").first
         route_btn.click()
         page.wait_for_timeout(1000)
 
-        # 增加至2人
-        print("🖱️ 调整人数至 2 人...")
-        page.evaluate("""() => {
-            const labels = Array.from(document.querySelectorAll('*')).filter(e => e.innerText && e.innerText.includes('大人') && e.innerText.includes('12歳'));
-            if (labels.length > 0) {
-                let row = labels[labels.length - 1].parentElement;
-                while (row && row !== document.body) {
-                    if (row.innerText.includes('+') && row.innerText.includes('-')) break;
-                    row = row.parentElement;
-                }
-                if (row) {
-                    const plusBtn = Array.from(row.querySelectorAll('*')).reverse().find(b => b.innerText && b.innerText.trim() === '+');
-                    if (plusBtn) {
-                        plusBtn.click();
-                        plusBtn.click();
-                    }
-                }
-            }
-        }""")
+        # 5. 调整人数至 2 人
+        print("🖱️ 调整人数：将大人增加至 2 人...")
+        adult_row = page.locator(".SelectUnit_amount_mRV4q:has-text('大人')").first
+        adult_input = adult_row.locator("input.InputNumber_input_a8d5e").first
+        plus_btn = adult_row.locator(".InputNumber_button_msWmE:has(use[*|href*='plus'])").first
+        if plus_btn.count() == 0:
+            plus_btn = adult_row.locator(".InputNumber_button_msWmE").last
+
+        # 点击加号直至人数为 2
+        for _ in range(5):
+            val = adult_input.input_value()
+            if val == "2":
+                break
+            plus_btn.click()
+            page.wait_for_timeout(500)
+
+        print(f"当前大人数量确认: {adult_input.input_value()} 人")
         page.wait_for_timeout(1000)
 
-        # 点击预约
-        print("🖱️ 点击【予約手続きへ】...")
-        submit_btn = page.locator("button:has-text('予約手続きへ'), div:has-text('予約手続きへ')").first
+        # 6. 点击【予約手続きへ】推进到车次详情页
+        print("🖱️ 点击【予約手続きへ】进入车次详情...")
+        submit_btn = page.locator("button.ActivityItem_bookingButton_rLGbb.Button_primary_lkUmG:has-text('予約手続きへ')").first
         if submit_btn.count() == 0:
-            submit_btn = page.locator("text='今すぐ予約'").first
+            submit_btn = page.locator("button:has-text('予約手続きへ')").first
 
         old_pages_count = len(context.pages)
         submit_btn.click()
         page.wait_for_timeout(4000)
 
-        # 判断是否进入新页面
+        # 处理可能弹出的新标签页
         active_page = page
         if len(context.pages) > old_pages_count:
             active_page = context.pages[-1]
             active_page.bring_to_front()
 
-        print(f"👉 当前步骤所在的真实 URL: {active_page.url}")
-        body_snippet = active_page.locator("body").inner_text()[:400].replace("\n", " ")
-        print(f"👉 当前页面文本切片: {body_snippet}")
+        # 等待车次列表加载
+        try:
+            active_page.wait_for_selector("text=/嵯峨野\\s*\\d+号|列車を選択してください/", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
 
-        # 解析车次
+        # 7. 提取可用车次
         trains_data = active_page.evaluate("""() => {
             const list = [];
             const seen = new Set();
-            const allNodes = Array.from(document.querySelectorAll('*'));
-            for (const el of allNodes) {
-                const txt = (el.innerText || "").trim();
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while (node = walker.nextNode()) {
+                const txt = (node.nodeValue || '').trim();
                 const m = txt.match(/^嵯峨野\\s*(\\d+)号$/);
                 if (m) {
                     const name = m[0].replace(/\\s+/g, '');
                     if (seen.has(name)) continue;
 
-                    let card = el.parentElement;
+                    let card = node.parentElement;
                     while (card && card !== document.body) {
-                        const cText = card.innerText || "";
+                        const cText = (card.innerText || card.textContent || '');
                         if (/\\d{1,2}:\\d{2}/.test(cText)) break;
                         card = card.parentElement;
                     }
 
                     if (card && card !== document.body) {
                         seen.add(name);
-                        const cText = card.innerText || "";
+                        const cText = (card.innerText || card.textContent || '').replace(/\\s+/g, ' ');
                         const times = cText.match(/\\b\\d{1,2}:\\d{2}\\b/g) || [];
+                        const depTime = times[0] || '';
+
+                        const hasCircle = cText.includes('○') || cText.includes('△');
+                        const hasCross = cText.includes('×') || cText.includes('✕') || cText.includes('満席') || (card.className || '').toLowerCase().includes('disabled');
+
                         list.push({
                             name: name,
-                            depTime: times[0] || "",
-                            isAvailable: (cText.includes("○") || cText.includes("△")) && !(cText.includes("×") || cText.includes("満席")),
-                            raw: cText.replace(/\\s+/g, ' ')
+                            depTime: depTime,
+                            isAvailable: hasCircle && !hasCross,
+                            raw: cText
                         });
                     }
                 }
@@ -163,30 +189,36 @@ def check_single_date(context, config: dict) -> list:
             return list;
         }""")
 
-        print(f"👉 解析到的原始车次数量: {len(trains_data)}")
         for item in trains_data:
             dep_time = item["depTime"]
             name = item["name"]
             is_avail = item["isAvailable"]
             if not dep_time:
                 continue
+
             try:
                 hour = int(dep_time.split(":")[0])
-                print(f"  -> {dep_time} {name} | 状态: {'有票(○/△)' if is_avail else '满席(×)'}")
-                if hour >= min_hour and is_avail:
-                    matched_trains.append(f"{name}({dep_time}发)")
             except ValueError:
-                pass
+                continue
+
+            status_str = "有余票(○/△)" if is_avail else "满席(×)"
+
+            if hour >= min_hour:
+                print(f"  -> {dep_time} {name} | 状态: {status_str} | 条件: 符合(>= {min_hour}:00)")
+                if is_avail:
+                    matched_trains.append(f"{name}({dep_time}发)")
+            else:
+                print(f"  -> {dep_time} {name} | 状态: {status_str} | 条件: 跳过(早于 {min_hour}:00)")
 
     except Exception as e:
-        print(f"[{label}] 异常: {e}")
+        print(f"[{label}] 排查出现异常: {e}")
     finally:
         page.close()
 
     return matched_trains
 
 def run():
-    print("=== 启动嵯峨野小火车余票真实巡查系统 (诊断增强版) ===")
+    print("=== 启动嵯峨野小火车余票智能巡查系统（真实 DOM 定制版） ===")
     alerts = []
 
     with sync_playwright() as p:
@@ -206,14 +238,23 @@ def run():
             for config in TARGET_CONFIGS:
                 trains = check_single_date(context, config)
                 if trains:
-                    alerts.append(f"{config['label']}: {'、'.join(trains)}")
+                    t_str = "、".join(trains)
+                    print(f"🎉【命中有效余票】{config['label']}: {t_str}")
+                    alerts.append(f"{config['label']}: {t_str}")
+                else:
+                    print(f"ℹ️【未见有效余票】{config['label']} 暂无符合时段的空位。")
 
             if alerts:
                 summary = "；".join(alerts)
-                print(f"\n🎉 命中余票: {summary}")
-                send_bark("岚山小火车有票提醒(2人)", f"刷出可用班次：{summary}，速登官网预订！", jump_url=ACTIVITY_URL)
+                print(f"\n[触发推送]: {summary}")
+                send_bark(
+                    "岚山小火车有票提醒(2人)",
+                    f"刷出可用班次：{summary}，速登官网预订！",
+                    jump_url=ACTIVITY_URL
+                )
             else:
-                print("\n未检测到符合条件的余票。")
+                print("\n本次巡查结束，两日期在设定时段内均无可用余票。")
+
         finally:
             browser.close()
 
