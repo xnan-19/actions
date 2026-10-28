@@ -35,9 +35,8 @@ def is_beijing_quiet_hours() -> tuple:
 
 def lock_and_build_direct_pay_url(date_str: str, service_id: str, seats: list) -> str:
     """
-    【方案二核心实现】：
     1. 云端直接调用 Linktivity 官方预占座接口 /v1/reservations/check
-    2. 生成携带完整合法座位参数的直达支付 URL（直达 booking/pay，绝不回跳首页）
+    2. 生成带 auto=1 的活动详情页直达链接，由手机端脚本模拟秒点预订，合法生成 Session 顺畅流转
     """
     manual_seats = []
     seat_param_parts = []
@@ -57,7 +56,6 @@ def lock_and_build_direct_pay_url(date_str: str, service_id: str, seats: list) -
             "arrangementTypeId": arr_type,
             "physicalCarName": car_name
         })
-        # 对应官方前端生成的格式: {logicalCarId}-{seatGroupId}-{seatId}-{arrangementTypeId}
         seat_param_parts.append(f"{logical_car}-{seat_group}-{seat_id}-{arr_type}")
 
     payload = {
@@ -80,26 +78,16 @@ def lock_and_build_direct_pay_url(date_str: str, service_id: str, seats: list) -
     except Exception as e:
         print(f"  ⚠️ [云端锁座网络提示]: {e}")
 
-    # 按照前端逆向得出的官方跳转标准拼装支付直达链接
+    # 直达活动页携带 auto=1 参数，由 Safari 插件秒点预订进入官方合法 Session，绝不回跳
     seats_str = ",".join(seat_param_parts)
-    direct_pay_url = (
-        f"https://ars-saganokanko.triplabo.jp/booking/pay?"
-        f"fromStationId=1&toStationId=4&serviceId={service_id}&seats={seats_str}"
+    direct_url = (
+        f"{MAIN_PAGE_URL}?auto=1&date={date_str}&serviceId={service_id}&unitsCount=2&seats={seats_str}"
     )
-    return direct_pay_url
+    return direct_url
 
 def build_valid_booking_url(date_str: str) -> str:
-    """普通兜底选座链接"""
-    base_url = "https://file.sagano.linktivity.io/seat/51/down"
-    params = {
-        "lang": "ja",
-        "date": date_str,
-        "unitsCount": "2",
-        "backUrl": MAIN_PAGE_URL,
-        "redirectUrl": "https://ars-saganokanko.triplabo.jp/booking/pay",
-        "currentStep": "station"
-    }
-    return f"{base_url}?{urllib.parse.urlencode(params)}"
+    """普通兜底活动页直达链接"""
+    return f"{MAIN_PAGE_URL}?auto=1&date={date_str}&unitsCount=2"
 
 def send_bark(title: str, content: str, jump_url: str = "") -> bool:
     """向 iPhone 发送 Bark 强提醒（含夜间过滤与 3 次重试）"""
@@ -205,9 +193,9 @@ def process_nov_05():
 
         if not direct_url:
             direct_url = build_valid_booking_url(date_str)
-            msg = f"可用车次：{trains_text}。轻点直接进入选座！"
+            msg = f"可用车次：{trains_text}。轻点自动预订！"
         else:
-            msg = f"可用车次：{trains_text}，已为你预占座位：{seats_desc}。轻点直达支付！"
+            msg = f"可用车次：{trains_text}，已为你预占座位：{seats_desc}。轻点直达！"
 
         send_bark(
             "🎉 岚山小火车【11月05日】有票提醒", 
@@ -242,13 +230,13 @@ def process_nov_10():
             chosen = random.sample(vacant_seats, 2)
             seats_desc = f"{chosen[0]['car_name']}{chosen[0]['seat_group_id']}{chosen[0]['seat_id']}、{chosen[1]['car_name']}{chosen[1]['seat_group_id']}{chosen[1]['seat_id']}"
             
-            # 【方案二】：云端预占座并生成直达支付页链接
+            # 云端预占座并生成直达活动页秒点链接
             direct_url = lock_and_build_direct_pay_url(date_str, s_id, chosen)
             
             print(f"  ✔ 选中 [{t_name} {dep_time}]，分配推荐座位: {seats_desc}")
             send_bark(
                 "🎉 岚山小火车【11月10日】有2人票",
-                f"优选车次：{t_name}({dep_time}发)，已锁座: {seats_desc}。轻点直达支付！",
+                f"优选车次：{t_name}({dep_time}发)，已锁座: {seats_desc}。轻点直达预订！",
                 jump_url=direct_url
             )
             return
@@ -291,13 +279,13 @@ def process_nov_24():
             chosen = random.sample(vacant_seats, 2)
             seats_desc = f"{chosen[0]['car_name']}{chosen[0]['seat_group_id']}{chosen[0]['seat_id']}、{chosen[1]['car_name']}{chosen[1]['seat_group_id']}{chosen[1]['seat_id']}"
             
-            # 【方案二】：云端预占座并生成直达支付页链接
+            # 云端预占座并生成直达活动页秒点链接
             direct_url = lock_and_build_direct_pay_url(date_str, s_id, chosen)
 
             print(f"  🎉 11月24日黄金时段命中: {t_name}({dep_time}) | 推荐座: {seats_desc}")
             send_bark(
                 "🎉 岚山小火车【11月24日】抢到2人票！",
-                f"命中黄金时段 {t_name}({dep_time}发)，已锁座: {seats_desc}。轻点直达支付！",
+                f"命中黄金时段 {t_name}({dep_time}发)，已锁座: {seats_desc}。轻点直达预订！",
                 jump_url=direct_url
             )
             return
