@@ -6,18 +6,19 @@ BARK_KEY = os.getenv("BARK_KEY", "")
 
 # 监控目标：日期、显示名称、起始时间（包含）
 TARGET_CONFIGS = [
-    {"date": "2026-11-05", "label": "11月05日", "min_hour": 10},
-    {"date": "2026-11-24", "label": "11月24日", "min_hour": 14},
+    {"date": "2026-11-05", "label": "11月05日", "min_hour": 10},  # 10:00 以后
+    {"date": "2026-11-12", "label": "11月12日", "min_hour": 0},   # 默认全天（>= 0:00，可按需修改）
+    {"date": "2026-11-24", "label": "11月24日", "min_hour": 14},  # 14:00 以后
 ]
 
-# 官方库存查询真实 API
+# 官方库存查询真实 API[cite: 15]
 API_URL = "https://common-api.sagano.linktivity.io/v1/search-inventory"
 
-# 官网主页与直达抢票链接生成
+# 官网主页与直达抢票链接生成[cite: 15]
 MAIN_PAGE_URL = "https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
 
 def build_direct_booking_url(date_str: str) -> str:
-    """生成带日期的直达 2 人选座链接"""
+    """生成带日期的直达 2 人选座链接[cite: 15]"""
     base_url = "https://file.sagano.linktivity.io/seat/51/down"
     params = {
         "lang": "ja",
@@ -66,7 +67,7 @@ def check_single_date(config: dict) -> list:
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
 
-    # 嵯峨野(1) -> 龟冈(4), 下行单程 51 号产品, 2 人
+    # 嵯峨野(1) -> 龟冈(4), 下行单程 51 号产品, 2 人[cite: 15]
     payload = {
         "date": date_str,
         "from_station_id": "1",
@@ -142,7 +143,7 @@ def run():
             jump_url=jump_url
         )
     else:
-        print("\n本次 API 巡查结束，两日期在设定时段内均无可用余票。")
+        print("\n本次 API 巡查结束，所有目标日期在设定时段内均无可用余票。")
 
 if __name__ == "__main__":
     run()
