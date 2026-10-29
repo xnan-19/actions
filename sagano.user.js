@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      6.0
-// @description  收到Bark通知点开后，全自动精准点选路线、展开数量、设定2人、自动选车次、自动选座直达订单支付页！
+// @version      6.1
+// @description  收到Bark通知点开后，全自动精准点选路线、设定2人、自动选择车站下拉框、自动选车次、自动展开车厢锁定座位，直达订单支付页！
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
 // @grant        none
@@ -146,47 +146,137 @@
     }
 
     // =============================================================
-    // 阶段 2: Linktivity 车次与选座系统 (全自动选车次、选车厢、选座、确认)
+    // 阶段 2: Linktivity 车次与选座系统 (全自动选车站、选车次、选车厢、选座、确认)
     // =============================================================
     if (window.location.hostname.includes('linktivity.io')) {
         showHUD('🚀 抵达车次与选座系统，正在极速匹配...', 'rgba(0, 122, 255, 0.95)');
 
+        let fromStationSelected = false;
+        let toStationSelected = false;
         let trainSelected = false;
-        let carriageExpanded = false;
-        let seatsClicked = 0;
+        let carriageIndex = 0;
+        let lastSeatClickTime = 0;
         let confirmClicked = false;
 
         const linktivityTimer = setInterval(() => {
             // ---------------------------------------------------------
-            // ① 步骤一：自动选车次并点击「次へ」
+            // ① 步骤 2.1：自动选车站（处理乗車駅和降車駅下拉框）
+            // ---------------------------------------------------------
+            // 1. 乘车站（トロッコ嵯峨）
+            if (!fromStationSelected) {
+                // 检查是否已经在页面选定嵯峨
+                const selectedSaga = Array.from(document.querySelectorAll('div, span')).some(el => {
+                    const t = (el.innerText || '').trim();
+                    return t === 'トロッコ嵯峨' && !el.closest('[class*="option"], ul, li');
+                });
+
+                if (selectedSaga) {
+                    fromStationSelected = true;
+                } else {
+                    // 查找乘车站下拉框并点击展开
+                    const startStationBox = Array.from(document.querySelectorAll('div, button, input, span')).find(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t === '乗車駅を選択してください' || t.includes('乗車駅を選択');
+                    });
+
+                    if (startStationBox) {
+                        startStationBox.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        startStationBox.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        startStationBox.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        showHUD('🚉 正在选择乘车站：トロッコ嵯峨...', 'rgba(0, 122, 255, 0.95)');
+                    }
+
+                    // 在展开的浮层选项中查找并点击「トロッコ嵯峨」
+                    const sagaOption = Array.from(document.querySelectorAll('div, li, button, span, p')).find(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t === 'トロッコ嵯峨' || (t.includes('嵯峨') && !t.includes('嵐山') && !t.includes('亀岡') && !t.includes('選択') && !t.includes('乗車駅'));
+                    });
+
+                    if (sagaOption) {
+                        sagaOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        sagaOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        sagaOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        fromStationSelected = true;
+                        showHUD('✔ 乘车站已选中：トロッコ嵯峨', 'rgba(40, 167, 69, 0.95)');
+                        return;
+                    }
+                }
+            }
+
+            // 2. 降车站（トロッコ亀岡）
+            if (fromStationSelected && !toStationSelected) {
+                // 检查是否已经在页面选定亀岡
+                const selectedKameoka = Array.from(document.querySelectorAll('div, span')).some(el => {
+                    const t = (el.innerText || '').trim();
+                    return t === 'トロッコ亀岡' && !el.closest('[class*="option"], ul, li');
+                });
+
+                if (selectedKameoka) {
+                    toStationSelected = true;
+                } else {
+                    // 查找降车站下拉框并点击展开
+                    const endStationBox = Array.from(document.querySelectorAll('div, button, input, span')).find(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t === '降車駅を選択してください' || t.includes('降車駅を選択');
+                    });
+
+                    if (endStationBox) {
+                        endStationBox.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        endStationBox.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        endStationBox.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        showHUD('🏁 正在选择降车站：トロッコ亀岡...', 'rgba(0, 122, 255, 0.95)');
+                    }
+
+                    // 在展开的浮层选项中查找并点击「トロッコ亀岡」
+                    const kameokaOption = Array.from(document.querySelectorAll('div, li, button, span, p')).find(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t === 'トロッコ亀岡' || (t.includes('亀岡') && !t.includes('選択') && !t.includes('降車駅'));
+                    });
+
+                    if (kameokaOption) {
+                        kameokaOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        kameokaOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        kameokaOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        toStationSelected = true;
+                        showHUD('✔ 降车站已选中：トロッコ亀岡，正在查询车次...', 'rgba(40, 167, 69, 0.95)');
+                        return;
+                    }
+                }
+            }
+
+            // ---------------------------------------------------------
+            // ② 步骤 2.2：自动选车次并点击「次へ」进入选座
             // ---------------------------------------------------------
             if (!trainSelected) {
-                // 查找所有车次按钮（带有嵯峨野或时间的可用按钮）
                 const trainBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                    const cls = b.className || '';
                     const t = (b.innerText || b.textContent || '').trim();
-                    return (t.includes('嵯峨野') || (t.includes('号') && t.includes(':'))) && !b.disabled;
+                    const isTrainClass = (typeof cls === 'string') && cls.includes('_train_');
+                    const isTrainText = (t.includes('嵯峨野') || (t.includes('号') && t.includes(':'))) && !t.includes('号車');
+                    return (isTrainClass || isTrainText) && !b.disabled && !b.hasAttribute('disabled');
                 });
 
                 if (trainBtns.length > 0) {
-                    // 优先选择包含目标车次 ID 或未禁用的首个车次
                     let targetTrain = trainBtns[0];
                     if (targetService) {
-                        const matched = trainBtns.find(b => (b.outerHTML || '').includes(targetService));
+                        const matched = trainBtns.find(b => (b.outerHTML || '').includes(targetService) || (b.innerText || '').includes(targetService));
                         if (matched) targetTrain = matched;
                     }
 
                     targetTrain.click();
+                    targetTrain.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     const trainText = (targetTrain.innerText || '').split('\n')[0].trim();
                     showHUD(`✔ 已自动选中车次：${trainText}，正在下一步...`, 'rgba(40, 167, 69, 0.95)');
 
                     // 点击底部的「次へ」按钮进入选座
                     const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
                         const t = (b.innerText || '').trim();
-                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled;
+                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled && !b.hasAttribute('disabled');
                     });
 
                     if (nextBtn) {
                         nextBtn.click();
+                        nextBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                         trainSelected = true;
                     }
                     return;
@@ -194,57 +284,108 @@
             }
 
             // ---------------------------------------------------------
-            // ② 步骤二：选座页面（自动展开车厢并勾选座位）
+            // ③ 步骤 2.3：选座页面（展开车厢并精准勾选空闲座位）
             // ---------------------------------------------------------
             const carriageBtns = Array.from(document.querySelectorAll('button')).filter(b => {
                 const t = (b.innerText || '').trim();
-                return t.includes('号車') || t.includes('Car No');
+                const cls = b.className || '';
+                return (t.includes('号車') || t.includes('Car No') || (typeof cls === 'string' && cls.includes('carriageContainer'))) && !t.includes('次へ');
             });
 
-            if (carriageBtns.length > 0 && seatsClicked < targetUnits) {
-                // 展开第 1 个可用车厢（或包含 1号車 / 4号車）
-                if (!carriageExpanded) {
-                    carriageBtns[0].click();
-                    carriageExpanded = true;
-                    showHUD('✔ 已自动展开车厢，正在极速锁座...', 'rgba(40, 167, 69, 0.95)');
+            if (carriageBtns.length > 0) {
+                // 查找所有座位按钮（真正带 onClick 的 button）
+                const seatButtons = Array.from(document.querySelectorAll('button[class*="_seatInner_"], div[class*="_seat_"] button'));
+
+                // 如果座位尚未展开，点击当前车厢按钮展开
+                if (seatButtons.length === 0) {
+                    if (carriageBtns[carriageIndex]) {
+                        carriageBtns[carriageIndex].click();
+                        carriageBtns[carriageIndex].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        showHUD(`✔ 正在展开第 ${carriageIndex + 1} 个车厢...`, 'rgba(0, 122, 255, 0.95)');
+                    }
                     return;
                 }
 
-                // 在展开的座位图中，查找所有可点击的空位（非禁用且非占用）
-                const allSeatDivs = Array.from(document.querySelectorAll('div, button')).filter(el => {
-                    const cls = el.className || '';
-                    return (typeof cls === 'string') && cls.includes('seat_') && !cls.includes('List') && !cls.includes('Line');
+                // 统计已选中的座位数（带 _selected_ 类名）
+                const selectedSeatBtns = seatButtons.filter(b => {
+                    const cls = b.className || '';
+                    return cls.includes('_selected_') || cls.includes('selected');
                 });
 
-                for (const seatEl of allSeatDivs) {
-                    if (seatsClicked >= targetUnits) break;
-                    // 点击空闲座位
-                    seatEl.click();
-                    seatEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                    seatsClicked++;
+                // 读取页面底部的数量计数（如 "2/2"）
+                const countEl = document.querySelector('[class*="_count_"], [class*="count"]');
+                const countText = countEl ? (countEl.innerText || '').trim() : '';
+
+                // 判断是否已经选够了人数（例如已选中 2 人）
+                if (selectedSeatBtns.length >= targetUnits || (countText && countText.startsWith(`${targetUnits}/`))) {
+                    showHUD(`🎉 成功锁定 ${targetUnits} 个座位！正在点击下一步...`, 'rgba(40, 167, 69, 0.95)');
+
+                    // 点击底部的「次へ」按钮进入订单确认页
+                    const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                        const t = (b.innerText || '').trim();
+                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled && !b.hasAttribute('disabled');
+                    });
+
+                    if (nextBtn) {
+                        nextBtn.click();
+                        nextBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    }
+                    return;
+                }
+
+                // 查找所有可点击的空闲座位（排除 disabled、_disabled_ 以及已选中的座位）
+                const now = Date.now();
+                if (now - lastSeatClickTime > 250) {
+                    const availableSeatBtns = seatButtons.filter(b => {
+                        if (b.disabled || b.hasAttribute('disabled')) return false;
+                        const cls = b.className || '';
+                        if (cls.includes('_disabled') || cls.includes('disabled')) return false;
+                        if (cls.includes('_selected') || cls.includes('selected')) return false;
+                        return true;
+                    });
+
+                    if (availableSeatBtns.length > 0) {
+                        const seatBtn = availableSeatBtns[0];
+                        seatBtn.click();
+                        seatBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        seatBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        seatBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        lastSeatClickTime = now;
+                        showHUD(`💺 正在锁定座位 (${selectedSeatBtns.length + 1}/${targetUnits})...`, 'rgba(40, 167, 69, 0.95)');
+                        return;
+                    } else {
+                        // 当前车厢空位不足，切换展开下一个车厢
+                        if (carriageIndex + 1 < carriageBtns.length) {
+                            carriageIndex++;
+                            carriageBtns[carriageIndex].click();
+                            carriageBtns[carriageIndex].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            showHUD(`🔍 切换至车厢 ${carriageIndex + 1} 寻找可用座位...`, 'rgba(255, 149, 0, 0.95)');
+                            return;
+                        }
+                    }
                 }
             }
 
             // ---------------------------------------------------------
-            // ③ 步骤三：点击底部的「次へ」或「確定」进入订单支付页
+            // ④ 步骤 2.4：确认页面自动提交直达订单支付页
             // ---------------------------------------------------------
+            const isConfirmPage = !!document.querySelector('[class*="orderConfirm"], [class*="carriageList"]');
             const actionBtns = Array.from(document.querySelectorAll('button')).filter(b => {
                 const t = (b.innerText || '').trim();
-                return (t.includes('次へ') || t.includes('確定') || t.includes('予約確認') || t.includes('進む') || t.includes('Next')) && !b.disabled;
+                return (t.includes('次へ') || t.includes('確定') || t.includes('予約確認') || t.includes('進む') || t.includes('Next')) && !b.disabled && !b.hasAttribute('disabled');
             });
 
-            if (actionBtns.length > 0 && !confirmClicked) {
-                const btn = actionBtns[actionBtns.length - 1]; // 通常在最底部
+            if (actionBtns.length > 0 && isConfirmPage && !confirmClicked) {
+                const btn = actionBtns[actionBtns.length - 1];
                 btn.click();
-                showHUD('🎉 座位已锁定！正在火速直达订单支付页...', 'rgba(40, 167, 69, 0.95)');
-                if ((btn.innerText || '').includes('確定') || (btn.innerText || '').includes('確認')) {
-                    confirmClicked = true;
-                    clearInterval(linktivityTimer);
-                }
+                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                confirmClicked = true;
+                showHUD('🎉 选座锁定成功！正在火速直达订单支付页...', 'rgba(40, 167, 69, 0.95)');
+                clearInterval(linktivityTimer);
             }
-        }, 200);
+        }, 150);
 
-        setTimeout(() => clearInterval(linktivityTimer), 35000);
+        setTimeout(() => clearInterval(linktivityTimer), 45000);
     }
 
     // =============================================================
