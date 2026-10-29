@@ -328,10 +328,10 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
 def execute_monitor():
     # 测试推送模式
     if os.getenv("TEST_BARK", "").lower() in ["true", "1"]:
-        log("📢 触发 Bark 官方 DOM 自动化直达测试推送...")
+        log("📢 触发 Bark 连通性测试推送...")
         test_service = "SAGANO_01"
         test_date = "2026-10-31"
-        test_seats = "🎯 偶数连座 (4号车 4C+4D)"
+        test_seats = "【⚠️测试样例】4号车 4C+4D"
         test_seats_param = urllib.parse.quote("4-4-C,4-4-D")
         pay_url = (
             f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
@@ -341,8 +341,30 @@ def execute_monitor():
             f"&unitsCount={TICKETS_COUNT}"
             f"&auto=1"
         )
-        send_bark_notification("嵯峨野 01 号 (官方车次)", test_date, test_seats, pay_url)
-        log("✅ 官方 DOM 自动化测试推送已成功发出！请在手机上查看！")
+        if BARK_KEY:
+            title = urllib.parse.quote("🔔 岚山小火车抢票机器人·连通性测试")
+            body_text = (
+                f"【⚠️ 这是通知连通性测试，非实时退票】\n"
+                f"测试车次: 嵯峨野 01 号\n"
+                f"目标日期: {test_date}\n"
+                f"测试席位: 4号车 4C+4D\n"
+                f"真实监控正在后台 24 小时每 15 分钟扫描！一旦有人退票，将按照【偶数连座 > 偶数前后座 > 偶数分开】智能锁定并推送！"
+            )
+            body = urllib.parse.quote(body_text)
+            bark_url = (
+                f"https://api.day.app/{BARK_KEY}/{title}/{body}"
+                f"?url={urllib.parse.quote(pay_url)}"
+                f"&level=timeSensitive"
+                f"&sound=minuet"
+                f"&group=sagano-train"
+                f"&badge=1"
+            )
+            try:
+                res = requests.get(bark_url, timeout=10)
+                log(f"Bark 测试推送状态: {res.status_code}")
+            except Exception as e:
+                log(f"Bark 测试推送异常: {e}")
+        log("✅ 连通性测试推送已发出！")
         return True
 
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
