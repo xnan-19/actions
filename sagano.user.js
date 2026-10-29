@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      15.0
-// @description  收到Bark通知点开后，全自动精准点选路线、设定人数、选车站、选车次、原子防震荡精准锁定目标座位、自动填入乘客信息直达官方Visa支付！
+// @version      16.0
+// @description  全车厢全局智能选座：偶数连座 => 偶数前后座 => 同车偶数分开 => 跨车偶数座，遇到被抢自动降级不卡死，直达官方Visa支付！
 // @author       Antigravity
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @run-at       document-end
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -20,7 +20,7 @@
         if (!hud) {
             hud = document.createElement('div');
             hud.id = 'sagano-hud';
-            hud.style.cssText = 'position:fixed;top:20%;left:5%;width:90%;z-index:2147483647;padding:16px 20px;font-size:16px;font-weight:bold;text-align:center;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.5);pointer-events:none;transition:all 0.3s ease;';
+            hud.style.cssText = 'position:fixed;top:18%;left:5%;width:90%;z-index:2147483647;padding:16px 20px;font-size:16px;font-weight:bold;text-align:center;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.5);pointer-events:none;transition:all 0.3s ease;';
             (document.body || document.documentElement).appendChild(hud);
         }
         hud.style.background = bgColor || 'rgba(0, 122, 255, 0.95)';
@@ -28,7 +28,7 @@
         hud.innerHTML = text;
     }
 
-    // 单一安全真实点击触发器
+    // 单一真实安全点击触发器
     function safeClick(element) {
         if (!element) return;
         try {
@@ -52,44 +52,132 @@
         }
     }
 
-    // 解析座位参数 (例如 "04-1-01-ORDINARY,04-1-02-ORDINARY" 或 "04车01号,04车02号")
-    function parseTargetSeats(seatsParam) {
-        if (!seatsParam) return [];
-        return seatsParam.split(',').map(item => {
-            const raw = item.trim();
-            // 匹配 "04-1-01" 格式
-            const p = raw.split(/[-_]/);
-            if (p.length >= 2) {
-                return {
-                    car: parseInt(p[0], 10),
-                    group: parseInt(p[1], 10) || 1,
-                    seat: p[2] ? p[2].replace(/[^0-9A-Za-z]/g, '') : '',
-                    raw: raw
-                };
+    // 智能座位计算引擎 (偶数连座 > 偶数前后座 > 偶数分开坐 > 跨车偶数座 > 任意连座)
+    function evaluateBestSeats(carInventories, targetCount = 2) {
+        const allVacant = [];
+        (carInventories || []).forEach(car => {
+            const carId = parseInt(car.logical_car_id || car.logicalCarId, 10);
+            (car.arrangements || []).forEach(arr => {
+                const isArrangeable = (arr.arrangement_state || arr.arrangementState) === 'ARRANGEABLE';
+                const isVacant = (arr.reservation_state || arr.reservationState) === 'VACANT';
+                if (isArrangeable && isVacant) {
+                    const group = parseInt(arr.seat_group_id || arr.seatGroupId, 10);
+                    const seat = (arr.seat_id || arr.seatId || '').trim().toUpperCase();
+                    const isEven = (group % 2 === 0);
+                    allVacant.push({
+                        carId,
+                        group,
+                        seat,
+                        isEven,
+                        key: `${carId}-${group}-${seat}`
+                    });
+                }
+            });
+        });
+
+        if (allVacant.length === 0) return null;
+        if (allVacant.length < targetCount) return { pair: allVacant, desc: '部分可用席位' };
+
+        let bestPair = null;
+        let highestScore = -1;
+        let bestType = '';
+
+        for (let i = 0; i < allVacant.length; i++) {
+            for (let j = i + 1; j < allVacant.length; j++) {
+                const s1 = allVacant[i];
+                const s2 = allVacant[j];
+                let score = 0;
+                let typeName = '';
+
+                const sameCar = (s1.carId === s2.carId);
+                const bothEven = (s1.isEven && s2.isEven);
+                const sameGroup = (s1.group === s2.group);
+                const isAdjacentGroup = (Math.abs(s1.group - s2.group) === 2);
+
+                const isPairSeat = sameGroup && (
+                    (s1.seat === 'A' && s2.seat === 'B') || (s1.seat === 'B' && s2.seat === 'A') ||
+                    (s1.seat === 'C' && s2.seat === 'D') || (s1.seat === 'D' && s2.seat === 'C')
+                );
+
+                const isSameSide = (
+                    (['A', 'B'].includes(s1.seat) && ['A', 'B'].includes(s2.seat)) ||
+                    (['C', 'D'].includes(s1.seat) && ['C', 'D'].includes(s2.seat))
+                );
+
+                if (sameCar) {
+                    if (bothEven) {
+                        if (isPairSeat) {
+                            score = 10000;
+                            typeName = `🎯 偶数连座 (${s1.carId}号车 ${s1.group}${s1.seat}+${s2.seat})`;
+                        } else if (isAdjacentGroup && isSameSide) {
+                            score = 8000;
+                            typeName = `🎯 偶数前后座 (${s1.carId}号车 ${s1.group}${s1.seat}+${s2.group}${s2.seat})`;
+                        } else {
+                            score = 6000;
+                            typeName = `🎯 同车偶数座 (${s1.carId}号车 ${s1.group}${s1.seat}+${s2.group}${s2.seat})`;
+                        }
+                    } else if (isPairSeat) {
+                        score = 2500;
+                        typeName = `💺 普通连座 (${s1.carId}号车 ${s1.group}${s1.seat}+${s2.seat})`;
+                    } else {
+                        score = 1000;
+                        typeName = `💺 同车席位 (${s1.carId}号车)`;
+                    }
+                } else {
+                    if (bothEven) {
+                        score = 4000;
+                        typeName = `🎯 跨车偶数座 (${s1.carId}车${s1.group}${s1.seat} + ${s2.carId}车${s2.group}${s2.seat})`;
+                    } else {
+                        score = 500;
+                        typeName = `💺 跨车席位 (${s1.carId}车 + ${s2.carId}车)`;
+                    }
+                }
+
+                if (score > highestScore) {
+                    highestScore = score;
+                    bestPair = [s1, s2];
+                    bestType = typeName;
+                }
             }
-            // 匹配 "04车01号" 格式
-            const m = raw.match(/(\d+)车.*?(\d+|[A-Za-z]+)/);
-            if (m) {
-                return {
-                    car: parseInt(m[1], 10),
-                    group: 1,
-                    seat: m[2],
-                    raw: raw
-                };
-            }
-            return null;
-        }).filter(Boolean);
+        }
+
+        return { pair: bestPair, score: highestScore, desc: bestType };
     }
 
+    // 全局库存数据缓存
+    let globalInventoryData = null;
+    let globalBestTarget = null;
+
+    // 劫持 Fetch 实时截获所有车厢座位库存
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const response = await originalFetch.apply(this, args);
+        try {
+            const urlStr = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+            if (urlStr.includes('/v1/inventories/')) {
+                const clone = response.clone();
+                clone.json().then(data => {
+                    if (data && data.car_inventories) {
+                        globalInventoryData = data.car_inventories;
+                        const res = evaluateBestSeats(globalInventoryData, 2);
+                        if (res && res.pair) {
+                            globalBestTarget = res;
+                            console.log('[嵯峨野助手] ⚡ 智能计算最佳选座方案:', res.desc, res.pair);
+                            showHUD(`💡 智能锁定最优席位：${res.desc}`, 'rgba(40, 167, 69, 0.95)');
+                        }
+                    }
+                }).catch(() => {});
+            }
+        } catch (e) {}
+        return response;
+    };
+
+    // 参数读取
     const url = new URL(window.location.href);
     const params = url.searchParams;
-
-    // 参数读取（支持 URL 参数与跨域持久化存储）
     const targetDate = params.get('date') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_date') : null) || sessionStorage.getItem('sagano_date') || '2026-10-31';
     const targetService = params.get('serviceId') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_service') : null) || sessionStorage.getItem('sagano_service') || '';
-    const seatsParam = params.get('seats') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_seats') : null) || sessionStorage.getItem('sagano_seats') || '';
-    const parsedTargetSeats = parseTargetSeats(seatsParam);
-    const targetUnits = parseInt(params.get('unitsCount') || (parsedTargetSeats.length > 0 ? parsedTargetSeats.length : '2'), 10);
+    const targetUnits = parseInt(params.get('unitsCount') || '2', 10);
 
     // 持久化存储
     if (params.get('date')) {
@@ -99,10 +187,6 @@
     if (params.get('serviceId')) {
         try { sessionStorage.setItem('sagano_service', params.get('serviceId')); } catch(e){}
         if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_service', params.get('serviceId'));
-    }
-    if (params.get('seats')) {
-        try { sessionStorage.setItem('sagano_seats', params.get('seats')); } catch(e){}
-        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_seats', params.get('seats'));
     }
     if (params.get('unitsCount')) {
         try { sessionStorage.setItem('sagano_units', params.get('unitsCount')); } catch(e){}
@@ -146,7 +230,6 @@
                         }
                     }
                 } else if (!dateDone) {
-                    // 已是目标月份，查找并点击目标日期
                     const dayButtons = document.querySelectorAll('button[class*="dateTableDayButton"], [class*="dateTableBodyCell"] button, [class*="day"] button');
                     for (const btn of dayButtons) {
                         if (btn.hasAttribute('disabled') || btn.disabled) continue;
@@ -176,7 +259,7 @@
                 }
             }
 
-            // ③ 自动设定人数：点击加号按钮
+            // ③ 自动设定人数
             if (routeDone && unitCount < targetUnits) {
                 const plusBtns = Array.from(document.querySelectorAll('button')).filter(b => {
                     const use = b.querySelector('use');
@@ -213,14 +296,14 @@
     }
 
     // =============================================================
-    // 阶段 2: Linktivity 外部选座系统 (v15.0 原子防震荡 & 绝不卡死引擎)
+    // 阶段 2: Linktivity 外部选座系统 (v16.0 智能全车厢偶数优先 & 绝不卡死引擎)
     // =============================================================
     if (window.location.hostname.includes('linktivity.io')) {
         showHUD('⚡ [1/4] 已进入选座系统，正在锁定车站...', 'rgba(0, 122, 255, 0.95)');
 
         let trainSelected = false;
-        let isActionPending = false; // 原子操作锁：防多重点击并发
-        let isSeatLocked = false;    // 满额绝对强锁：一旦选满，永久封锁选座反选，全速提交
+        let isActionPending = false;
+        let isSeatLocked = false;
         let lastActionTime = 0;
         let confirmSubmitted = false;
 
@@ -317,7 +400,7 @@
                 }
             }
 
-            // 3. 核心选座阶段 (彻底解决 4/4 与 6/4 震荡)
+            // 3. 核心智能选座阶段 (全车厢最优策略调度)
             const countEl = document.querySelector('p[class*="_count_"], [class*="count"]');
             const carriageContainers = Array.from(document.querySelectorAll('button[class*="_carriageContainer_"], [class*="carriage"] button'));
 
@@ -336,7 +419,7 @@
                 const selectedSeats = Array.from(document.querySelectorAll('button[class*="_selected_"]'));
                 if (!countEl) curSelected = selectedSeats.length;
 
-                // 核心法则 A：【满额绝对强锁】(一旦正好达到 2/2 或 4/4，永久关闭选座与反选，死按提交)
+                // 满额绝对强锁：一旦正好选满 2/2，停止一切操作，死按提交
                 if (curSelected === maxAllowed || isSeatLocked) {
                     isSeatLocked = true;
                     showHUD(`🎉 成功锁定 ${curSelected}/${maxAllowed} 席位！正在全力提交直达支付...`, 'rgba(40, 167, 69, 0.95)');
@@ -347,13 +430,13 @@
                     return;
                 }
 
-                // 如果原子锁正在冷却（800ms 内禁止重复点击），静默等待网络回包
+                // 800ms 原子冷却保护
                 if (isActionPending && (now - lastActionTime < 800)) {
                     return;
                 }
                 isActionPending = false;
 
-                // 核心法则 B：【超额单步回退】(分子 > 分母，单次取消一个多余座位并进入冷却)
+                // 超额安全回退
                 if (curSelected > maxAllowed && selectedSeats.length > 0) {
                     const extraSeat = selectedSeats[selectedSeats.length - 1];
                     isActionPending = true;
@@ -363,44 +446,122 @@
                     return;
                 }
 
-                // 核心法则 C：【未满额选座】(单次点击一个空座并立即上锁 800ms 冷却)
+                // 未满额：执行全车最优选座
                 if (curSelected < maxAllowed) {
-                    // ① 优先选择目标车厢
-                    let targetCarNum = 4;
-                    if (parsedTargetSeats.length > 0) {
-                        targetCarNum = parsedTargetSeats[0].car;
+                    // ① 如果已通过拦截截获全车最优席位 (如 4号车 4C+4D)
+                    if (globalBestTarget && globalBestTarget.pair && globalBestTarget.pair.length >= maxAllowed) {
+                        // 寻找下一个尚未被选中的目标座位
+                        const nextTarget = globalBestTarget.pair.find(target => {
+                            const selectedKeys = selectedSeats.map(s => {
+                                const span = s.querySelector('span') || s;
+                                const seatLetter = (span.innerText || '').trim().toUpperCase();
+                                const groupDiv = s.closest('div[class*="_group_"]');
+                                const groupNum = groupDiv ? parseInt(groupDiv.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10) : 0;
+                                return `${groupNum}-${seatLetter}`;
+                            });
+                            return !selectedKeys.includes(`${target.group}-${target.seat}`);
+                        });
+
+                        if (nextTarget) {
+                            // 检查该目标所在车厢是否展开
+                            const targetCarBtn = carriageContainers.find(b => (b.innerText || '').includes(`${nextTarget.carId}号`));
+                            const isTargetCarExpanded = targetCarBtn ? !!targetCarBtn.closest('div[class*="_carriageContent_"], div')?.querySelector('div[class*="_car_"]') : false;
+
+                            if (targetCarBtn && !isTargetCarExpanded) {
+                                isActionPending = true;
+                                lastActionTime = now;
+                                safeClick(targetCarBtn);
+                                showHUD(`🔍 展开目标车厢：${nextTarget.carId} 号车...`, 'rgba(0, 122, 255, 0.95)');
+                                return;
+                            }
+
+                            // 目标车厢已展开，定位具体排号和座位
+                            if (isTargetCarExpanded && targetCarBtn) {
+                                const carContent = targetCarBtn.closest('div[class*="_carriageContent_"], div');
+                                const groupSpans = Array.from(carContent.querySelectorAll('span[class*="_groupId_"]'));
+                                const matchedGroupSpan = groupSpans.find(sp => parseInt((sp.innerText || '').trim(), 10) === nextTarget.group);
+
+                                if (matchedGroupSpan) {
+                                    const groupDiv = matchedGroupSpan.closest('div[class*="_group_"]');
+                                    if (groupDiv) {
+                                        const seatBtns = Array.from(groupDiv.querySelectorAll('button[class*="_seatInner_"]'));
+                                        const matchedSeatBtn = seatBtns.find(b => {
+                                            const sLetter = (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase();
+                                            return sLetter === nextTarget.seat;
+                                        });
+
+                                        if (matchedSeatBtn) {
+                                            const isAlreadySelected = matchedSeatBtn.className.includes('_selected_');
+                                            const isDisabled = matchedSeatBtn.disabled || matchedSeatBtn.className.includes('_disabled_');
+
+                                            if (!isAlreadySelected && !isDisabled) {
+                                                isActionPending = true;
+                                                lastActionTime = now;
+                                                safeClick(matchedSeatBtn);
+                                                showHUD(`🎯 命中：${nextTarget.carId}号车 ${nextTarget.group}${nextTarget.seat}！`, 'rgba(40, 167, 69, 0.95)');
+                                                return;
+                                            } else if (isDisabled) {
+                                                // 发现该座已被别人抢走，立刻清空缓存重新计算下一最优！
+                                                console.warn('[嵯峨野助手] 目标座位已被占，重新寻找下一最优！', nextTarget);
+                                                if (globalInventoryData) {
+                                                    // 标记该座不可用
+                                                    const car = globalInventoryData.find(c => parseInt(c.logical_car_id, 10) === nextTarget.carId);
+                                                    if (car) {
+                                                        const arr = (car.arrangements || []).find(a => parseInt(a.seat_group_id, 10) === nextTarget.group && a.seat_id === nextTarget.seat);
+                                                        if (arr) arr.reservation_state = 'OCCUPIED';
+                                                    }
+                                                    globalBestTarget = evaluateBestSeats(globalInventoryData, 2);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    // 检查目标车厢是否展开
-                    const targetCarBtn = carriageContainers.find(b => (b.innerText || '').includes(`${targetCarNum}号`));
-                    const isTargetCarExpanded = targetCarBtn ? !!targetCarBtn.closest('div[class*="_carriageContent_"], div')?.querySelector('div[class*="_car_"]') : false;
+                    // ② DOM 动态巡检兜底：优先选偶数排座位
+                    const expandedCar = carriageContainers.find(b => !!b.closest('div[class*="_carriageContent_"], div')?.querySelector('div[class*="_car_"]'));
+                    if (expandedCar) {
+                        const carContent = expandedCar.closest('div[class*="_carriageContent_"], div');
+                        const groups = Array.from(carContent.querySelectorAll('div[class*="_group_"]'));
 
-                    if (targetCarBtn && !isTargetCarExpanded) {
-                        isActionPending = true;
-                        lastActionTime = now;
-                        safeClick(targetCarBtn);
-                        showHUD(`🔍 正在展开指定 ${targetCarNum} 号车厢...`, 'rgba(0, 122, 255, 0.95)');
-                        return;
+                        // 优先寻找偶数排的空位 (如 2, 4, 6, 8, 10...)
+                        const evenGroups = groups.filter(g => {
+                            const gNum = parseInt(g.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10);
+                            return gNum > 0 && (gNum % 2 === 0);
+                        });
+
+                        for (const g of evenGroups) {
+                            const avail = g.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
+                            if (avail) {
+                                isActionPending = true;
+                                lastActionTime = now;
+                                safeClick(avail);
+                                showHUD(`🎯 锁定偶数排座位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                                return;
+                            }
+                        }
+
+                        // 若偶数排无空位，选该车厢任意空位
+                        const anyAvail = carContent.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
+                        if (anyAvail) {
+                            isActionPending = true;
+                            lastActionTime = now;
+                            safeClick(anyAvail);
+                            showHUD(`💺 锁定席位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                            return;
+                        }
                     }
 
-                    // ② 在已展开的车厢中寻找空闲座位
-                    const availableSeat = document.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
-                    if (availableSeat) {
-                        isActionPending = true;
-                        lastActionTime = now;
-                        safeClick(availableSeat);
-                        showHUD(`💺 正在锁定席位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
-                        return;
-                    }
-
-                    // ③ 若当前车厢无空座，展开下一节车厢
+                    // ③ 当前车厢无可用空位，展开下一节车厢探查
                     for (const b of carriageContainers) {
                         const isExpanded = !!b.closest('div[class*="_carriageContent_"], div')?.querySelector('div[class*="_car_"]');
                         if (!isExpanded) {
                             isActionPending = true;
                             lastActionTime = now;
                             safeClick(b);
-                            showHUD('🔍 正在探索其他车厢空闲席位...', 'rgba(255, 149, 0, 0.95)');
+                            showHUD('🔍 正在探索其他车厢可用座位...', 'rgba(255, 149, 0, 0.95)');
                             return;
                         }
                     }
@@ -429,7 +590,6 @@
 
         let formFilled = false;
         const payTimer = setInterval(() => {
-            // 自动填充姓名、邮箱、手机号
             const lastNameInput = document.querySelector('input[name="lastName"], input[placeholder*="姓"], [class*="lastName"] input');
             const firstNameInput = document.querySelector('input[name="firstName"], input[placeholder*="名"], [class*="firstName"] input');
             const emailInput = document.querySelector('input[type="email"], input[name="email"], input[placeholder*="mail"]');
@@ -452,13 +612,11 @@
                 telInput.dispatchEvent(new Event('input', { bubbles: true }));
             }
 
-            // 自动勾选同意规约
             const termsCheckbox = document.querySelector('input[type="checkbox"]');
             if (termsCheckbox && !termsCheckbox.checked) {
                 termsCheckbox.click();
             }
 
-            // 自动点击“下一步 / 確認”按钮进入信用卡输入框
             const confirmBtn = document.querySelector('button[class*="confirmButton"], button[class*="button_"]');
             if (confirmBtn && !confirmBtn.disabled && !formFilled) {
                 const btnText = (confirmBtn.innerText || '').trim();
