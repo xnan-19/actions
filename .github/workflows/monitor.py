@@ -80,9 +80,9 @@ def get_firebase_token():
 def search_inventory(date_str, total=2):
     payload = {
         "date": date_str,
-        "fromStationId": FROM_STATION_SAGANO,
-        "toStationId": TO_STATION_KAMEOKA,
-        "productId": PRODUCT_ID,
+        "from_station_id": "1",
+        "to_station_id": "4",
+        "product_id": "51",
         "total": total
     }
     headers = {
@@ -95,6 +95,8 @@ def search_inventory(date_str, total=2):
         res = requests.post(API_SEARCH_INVENTORY, headers=headers, json=payload, timeout=10)
         if res.status_code == 200:
             return res.json()
+        else:
+            log(f"搜索余票返回错误码 {res.status_code}: {res.text}")
     except Exception as e:
         log(f"查询余票网络异常 ({date_str}): {e}")
     return None
@@ -379,13 +381,26 @@ def execute_monitor():
 
         services = inv_data.get("services", [])
         log(f"日期 {date_str} 共检索到 {len(services)} 个车次:")
-        for s in services:
-            log(f"  • {s.get('name')} (ID: {s.get('serviceId')}) | 状态: {s.get('state')} | 是否可订: {s.get('beforeDeadline')}")
+        available_services = []
 
-        available_services = [
-            s for s in services
-            if s.get("beforeDeadline") and s.get("state") == "ORDINARY"
-        ]
+        for s in services:
+            sid = s.get("id") or s.get("serviceId")
+            sname = s.get("name")
+            if isinstance(sname, dict):
+                sname = sname.get("short_name", sid)
+            elif not sname:
+                sname = sid
+
+            is_avail = s.get("available") is True or s.get("state") == "ORDINARY"
+            dep_time = s.get("departure_hhmm") or s.get("departureHhmm") or ""
+            log(f"  • {sname} ({dep_time}) [ID: {sid}] | 可订状态: {'有余票🔥' if is_avail else '满席❌'}")
+
+            if is_avail:
+                available_services.append({
+                    "serviceId": sid,
+                    "name": sname,
+                    "depTime": dep_time
+                })
 
         if not available_services:
             log(f"👉 判定: 日期 {date_str} 所有班次目前均为满席 (无退票)")
@@ -393,8 +408,8 @@ def execute_monitor():
 
         log(f"🔥 发现 {len(available_services)} 个可用班次！")
         for srv in available_services:
-            service_id = srv.get("serviceId")
-            service_name = srv.get("name", service_id)
+            service_id = srv["serviceId"]
+            service_name = srv["name"]
             log(f"正在智能检索最优车席: {service_name} ({service_id}) ...")
 
             best_pair, best_desc = find_best_even_seats(date_str, service_id, target_count=TICKETS_COUNT)
