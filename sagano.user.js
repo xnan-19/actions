@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      17.5
-// @description  终极执行版：发车时间与车次精准锁定，带时间参数；直选GitHub推荐精确席位；毫秒差候补偶数座；直达Visa支付！
+// @version      18.0
+// @description  终极防抽搐版：1-5号车顺次单向智能遍历；就地补齐满额强锁；发车时间与精确席位锁定；毫秒差候补偶数座；直达Visa支付！
 // @author       Antigravity
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
@@ -287,6 +287,8 @@
         let lastActionTime = 0;
         let isSeatLocked = false;
         let isActionPending = false;
+        let lastCarSwitchTime = 0;
+        let visitedCars = new Set();
         let fallbackSwitchedCarId = null;
 
         const linktivityTimer = setInterval(() => {
@@ -398,11 +400,22 @@
                 }
             }
 
-            // 3. 核心选座阶段 (优先直选推荐席位；毫秒差被抢时自动候补)
+            // 3. 核心选座阶段 (全车厢 1-5 智能遍历，就地补齐，绝对防抽搐)
             const countEl = document.querySelector('p[class*="_count_"], [class*="count"]');
-            const carriageContainers = Array.from(document.querySelectorAll('button[class*="_carriageContainer_"], [class*="carriage"] button'));
+            const carriageBtns = Array.from(document.querySelectorAll('button[class*="_carriageContainer_"], [class*="carriage"] button')).filter(b => {
+                const t = (b.innerText || '').trim();
+                return t.includes('号车') || t.includes('号車') || t.includes('Car');
+            });
 
-            if (countEl || carriageContainers.length > 0) {
+            // 构造结构化车厢列表，并按车厢编号 1 -> 2 -> 3 -> 4 -> 5 严格升序排序
+            const carList = carriageBtns.map(btn => {
+                const num = parseInt((btn.innerText || '').match(/\d+/)?.[0] || '0', 10);
+                const isExp = isCarriageExpanded(btn);
+                const card = getCarCard(btn);
+                return { num, btn, isExpanded: isExp, card };
+            }).filter(c => c.num > 0).sort((a, b) => a.num - b.num);
+
+            if (countEl || carList.length > 0) {
                 let curSelected = 0;
                 let maxAllowed = targetUnits;
 
@@ -417,72 +430,130 @@
                 const selectedSeats = Array.from(document.querySelectorAll('button[class*="_selected_"]'));
                 if (!countEl) curSelected = selectedSeats.length;
 
-                // 满额绝对强锁：只要正好选满 2/2，停止任何其他动作，死死提交下一步
-                if (curSelected === maxAllowed || isSeatLocked) {
+                // 【规则 1：满额绝对强锁】只要达到 2/2，停止一切车厢切换与选座，死命点击提交！
+                if (curSelected >= maxAllowed || isSeatLocked) {
                     isSeatLocked = true;
                     showHUD(`🎉 成功锁定 ${curSelected}/${maxAllowed} 席位！正在全力提交直达支付...`, 'rgba(40, 167, 69, 0.95)');
                     const submitBtn = document.querySelector('div[class*="_footer_"] button:not([class*="outlined"]), footer button:last-child');
-                    if (submitBtn) {
+                    if (submitBtn && !submitBtn.disabled) {
                         safeClick(submitBtn);
                     }
                     return;
                 }
 
-                // 600ms 原子操作防抖冷却
-                if (isActionPending && (now - lastActionTime < 600)) {
-                    return;
-                }
+                // 操作冷却防抖 (500ms)
+                if (isActionPending && (now - lastActionTime < 500)) return;
                 isActionPending = false;
 
-                // 超额安全纠偏
-                if (curSelected > maxAllowed && selectedSeats.length > 0) {
-                    const extraSeat = selectedSeats[selectedSeats.length - 1];
-                    isActionPending = true;
-                    lastActionTime = now;
-                    safeClick(extraSeat);
-                    showHUD(`⚠️ 纠正多选座位 (${curSelected} ➔ ${maxAllowed})...`, 'rgba(255, 149, 0, 0.95)');
-                    return;
+                // 找到当前已展开的车厢对象
+                const currentExpandedCar = carList.find(c => c.isExpanded);
+
+                // 辅助函数：在指定车厢内寻找最佳座位并点击 (偶数连座 > 偶数对坐 > 偶数排 > 就地补齐)
+                function pickBestSeatInCar(carObj) {
+                    if (!carObj || !carObj.card) return false;
+                    const card = carObj.card;
+                    const groups = Array.from(card.querySelectorAll('div[class*="_group_"]'));
+
+                    // 解析排号
+                    const parsedGroups = groups.map(g => {
+                        const gNum = parseInt(g.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10);
+                        const availSeats = Array.from(g.querySelectorAll('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])'));
+                        return { groupDiv: g, groupNum: gNum, isEven: (gNum > 0 && gNum % 2 === 0), availSeats };
+                    }).filter(g => g.groupNum > 0);
+
+                    const evenGroups = parsedGroups.filter(g => g.isEven);
+
+                    // 1. 优先找偶数连座 (同桌 A+B 或 C+D)
+                    for (const g of evenGroups) {
+                        const letters = g.availSeats.map(b => (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase());
+                        let pick = null;
+                        if (letters.includes('A') && letters.includes('B')) pick = g.availSeats.find(b => ['A', 'B'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
+                        else if (letters.includes('C') && letters.includes('D')) pick = g.availSeats.find(b => ['C', 'D'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
+
+                        if (pick) {
+                            isActionPending = true;
+                            lastActionTime = now;
+                            safeClick(pick);
+                            showHUD(`🎯 锁定：偶数连座席位！`, 'rgba(40, 167, 69, 0.95)');
+                            return true;
+                        }
+                    }
+
+                    // 2. 其次找偶数前后对坐 (同桌面对面 A+D 或 B+C)
+                    for (const g of evenGroups) {
+                        const letters = g.availSeats.map(b => (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase());
+                        let pick = null;
+                        if (letters.includes('A') && letters.includes('D')) pick = g.availSeats.find(b => ['A', 'D'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
+                        else if (letters.includes('B') && letters.includes('C')) pick = g.availSeats.find(b => ['B', 'C'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
+
+                        if (pick) {
+                            isActionPending = true;
+                            lastActionTime = now;
+                            safeClick(pick);
+                            showHUD(`🎯 锁定：偶数前后对坐席位！`, 'rgba(40, 167, 69, 0.95)');
+                            return true;
+                        }
+                    }
+
+                    // 3. 找偶数排任意空位
+                    for (const g of evenGroups) {
+                        if (g.availSeats.length > 0) {
+                            isActionPending = true;
+                            lastActionTime = now;
+                            safeClick(g.availSeats[0]);
+                            showHUD(`🎯 锁定：偶数排席位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                            return true;
+                        }
+                    }
+
+                    // 4. 当前车厢任意剩余可用空座 (无论奇偶，就地补齐满额，绝不跨车)
+                    const anyAvail = card.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
+                    if (anyAvail) {
+                        isActionPending = true;
+                        lastActionTime = now;
+                        safeClick(anyAvail);
+                        showHUD(`💺 就地补齐席位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                        return true;
+                    }
+
+                    return false;
                 }
 
                 // =========================================================
-                // 模式 A: 执行 GitHub 扫描推荐的精确席位 (Direct Execution)
+                // 模式 1: 如果有推送推荐的目标座位 (plannedSeats)
                 // =========================================================
-                const availablePlannedTarget = plannedSeats.find(t => !t.isUnavailable);
-                if (availablePlannedTarget) {
-                    // 检查已选座位是否包含该目标
-                    const isAlreadyPicked = selectedSeats.some(s => {
-                        const span = s.querySelector('span') || s;
-                        const sLetter = (span.innerText || '').trim().toUpperCase();
-                        const groupDiv = s.closest('div[class*="_group_"]');
-                        const groupNum = groupDiv ? parseInt(groupDiv.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10) : 0;
-                        return groupNum === availablePlannedTarget.group && sLetter === availablePlannedTarget.seat;
+                if (plannedSeats && plannedSeats.length > 0) {
+                    const unpickedTarget = plannedSeats.find(t => {
+                        return !selectedSeats.some(s => {
+                            const span = s.querySelector('span') || s;
+                            const sLetter = (span.innerText || '').trim().toUpperCase();
+                            const groupDiv = s.closest('div[class*="_group_"]');
+                            const groupNum = groupDiv ? parseInt(groupDiv.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10) : 0;
+                            return groupNum === t.group && sLetter === t.seat;
+                        });
                     });
 
-                    if (isAlreadyPicked) {
-                        // 标记已完成，找下一个
-                        const nextTarget = plannedSeats.find(t => !t.isUnavailable && t !== availablePlannedTarget);
-                        if (!nextTarget) return;
-                    }
+                    if (unpickedTarget) {
+                        const targetCarObj = carList.find(c => c.num === unpickedTarget.carId);
 
-                    const target = isAlreadyPicked ? plannedSeats.find(t => !t.isUnavailable && t !== availablePlannedTarget) : availablePlannedTarget;
-                    if (target) {
-                        const targetCarBtn = carriageContainers.find(b => (b.innerText || '').includes(`${target.carId}号`));
-                        const isExpanded = targetCarBtn ? isCarriageExpanded(targetCarBtn) : false;
-
-                        // 1. 若目标车厢未展开：只点击一次展开，并冷却等待渲染！绝不重复点！
-                        if (targetCarBtn && !isExpanded) {
-                            isActionPending = true;
-                            lastActionTime = now;
-                            safeClick(targetCarBtn);
-                            showHUD(`🔍 展开目标车厢：${target.carId} 号车...`, 'rgba(0, 122, 255, 0.95)');
+                        // 1. 如果目标车厢未展开：展开它 (1200ms 防抖)
+                        if (targetCarObj && !targetCarObj.isExpanded) {
+                            if (now - lastCarSwitchTime > 1200) {
+                                lastCarSwitchTime = now;
+                                isActionPending = true;
+                                lastActionTime = now;
+                                safeClick(targetCarObj.btn);
+                                showHUD(`🔍 正在展开目标车厢：${unpickedTarget.carId} 号车...`, 'rgba(0, 122, 255, 0.95)');
+                            }
                             return;
                         }
 
-                        // 2. 目标车厢已展开：直接定位目标座位
-                        if (targetCarBtn && isExpanded) {
-                            const carCard = getCarCard(targetCarBtn);
-                            const groupSpans = Array.from(carCard.querySelectorAll('span[class*="_groupId_"]'));
-                            const matchedGroupSpan = groupSpans.find(sp => parseInt((sp.innerText || '').trim(), 10) === target.group);
+                        // 2. 如果目标车厢已展开：在该车厢中找推荐座
+                        if (targetCarObj && targetCarObj.isExpanded) {
+                            const card = targetCarObj.card;
+                            const groupSpans = Array.from(card.querySelectorAll('span[class*="_groupId_"]'));
+                            const matchedGroupSpan = groupSpans.find(sp => parseInt((sp.innerText || '').trim(), 10) === unpickedTarget.group);
+                            let found = false;
 
                             if (matchedGroupSpan) {
                                 const groupDiv = matchedGroupSpan.closest('div[class*="_group_"]');
@@ -490,125 +561,73 @@
                                     const seatBtns = Array.from(groupDiv.querySelectorAll('button[class*="_seatInner_"]'));
                                     const matchedSeatBtn = seatBtns.find(b => {
                                         const sLetter = (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase();
-                                        return sLetter === target.seat;
+                                        return sLetter === unpickedTarget.seat;
                                     });
 
-                                    if (matchedSeatBtn) {
-                                        const isSelected = matchedSeatBtn.className.includes('_selected_');
-                                        const isDisabled = matchedSeatBtn.disabled || matchedSeatBtn.className.includes('_disabled_');
-
-                                        if (!isSelected && !isDisabled) {
+                                    if (matchedSeatBtn && !matchedSeatBtn.disabled && !matchedSeatBtn.className.includes('_disabled_')) {
+                                        if (!matchedSeatBtn.className.includes('_selected_')) {
                                             isActionPending = true;
                                             lastActionTime = now;
                                             safeClick(matchedSeatBtn);
-                                            showHUD(`🎯 锁定推荐席位：${target.carId}号车 ${target.group}${target.seat}！`, 'rgba(40, 167, 69, 0.95)');
+                                            found = true;
+                                            showHUD(`🎯 锁定推荐席位：${unpickedTarget.carId}号车 ${unpickedTarget.group}${unpickedTarget.seat}！`, 'rgba(40, 167, 69, 0.95)');
                                             return;
-                                        } else if (isDisabled) {
-                                            // 毫秒差发生！目标座位被占，标记失效转入 Fallback
-                                            console.warn('[嵯峨野助手] 目标座位已被占，转入智能候补:', target);
-                                            showHUD(`⚠️ 席位 ${target.carId}车${target.group}${target.seat} 已被他人选定，正在为您候补最优偶数席位...`, 'rgba(255, 149, 0, 0.95)');
-                                            target.isUnavailable = true;
                                         }
                                     }
                                 }
+                            }
+
+                            // 【彻底消灭抽搐】：若目标座未找到或已被抢，立即清空 plannedSeats，就地转入当前车厢补齐！
+                            if (!found) {
+                                console.warn('[嵯峨野助手] 目标座位在当前车厢不可用，立即清空推荐目标，就地补齐:', unpickedTarget);
+                                showHUD(`⚠️ 席位 ${unpickedTarget.carId}车${unpickedTarget.group}${unpickedTarget.seat} 未找到，就地在当前车厢补齐！`, 'rgba(255, 149, 0, 0.95)');
+                                plannedSeats = [];
                             }
                         }
                     }
                 }
 
                 // =========================================================
-                // 模式 B: 毫秒差保底候补逻辑 (Fallback Mode)
-                // 严格遵循：偶数连座 => 偶数前后座 => 偶数分开坐 => 切换有票车厢
+                // 模式 2: 就地补齐优先（绝对死守当前车厢，绝不跨车反复横跳）
                 // =========================================================
-                const currentExpandedCarBtn = carriageContainers.find(b => isCarriageExpanded(b));
-                if (currentExpandedCarBtn) {
-                    const carCard = getCarCard(currentExpandedCarBtn);
-                    const groups = Array.from(carCard.querySelectorAll('div[class*="_group_"]'));
+                if (currentExpandedCar) {
+                    // 如果当前车厢能够选到座位，立即执行
+                    const picked = pickBestSeatInCar(currentExpandedCar);
+                    if (picked) return;
 
-                    // 偶数排方桌优先
-                    const evenGroups = groups.filter(g => {
-                        const gNum = parseInt(g.querySelector('span[class*="_groupId_"]')?.innerText || '0', 10);
-                        return gNum > 0 && (gNum % 2 === 0);
-                    });
+                    // 若当前车厢可用空座已被选完或无座：
+                    // 按 1 -> 2 -> 3 -> 4 -> 5 顺次单向寻找下一个未检查的车厢 (带 1500ms 防抖)
+                    if (now - lastCarSwitchTime > 1500) {
+                        visitedCars.add(currentExpandedCar.num);
 
-                    // 1. 尝试找偶数连座 (同桌 A+B 或 C+D)
-                    for (const g of evenGroups) {
-                        const availSeats = Array.from(g.querySelectorAll('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])'));
-                        const letters = availSeats.map(b => (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase());
-                        
-                        let pick = null;
-                        if (letters.includes('A') && letters.includes('B')) pick = availSeats.find(b => ['A', 'B'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
-                        else if (letters.includes('C') && letters.includes('D')) pick = availSeats.find(b => ['C', 'D'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
+                        // 按 1 -> 2 -> 3 -> 4 -> 5 严格单向递增查找
+                        const nextCarObj = carList.find(c => c.num > currentExpandedCar.num && !visitedCars.has(c.num)) ||
+                                           carList.find(c => !visitedCars.has(c.num));
 
-                        if (pick) {
+                        if (nextCarObj) {
+                            lastCarSwitchTime = now;
                             isActionPending = true;
                             lastActionTime = now;
-                            safeClick(pick);
-                            showHUD(`🎯 候补锁定：偶数连座席位！`, 'rgba(40, 167, 69, 0.95)');
+                            safeClick(nextCarObj.btn);
+                            showHUD(`🔄 ${currentExpandedCar.num}号车已无可用空座，顺次探查：${nextCarObj.num}号车...`, 'rgba(255, 149, 0, 0.95)');
                             return;
+                        } else {
+                            // 所有 1-5 车厢都探查过一遍
+                            visitedCars.clear(); // 循环一轮后重置，允许重新轮询
                         }
                     }
-
-                    // 2. 尝试找偶数前后座 (同桌对坐 A+D 或 B+C)
-                    for (const g of evenGroups) {
-                        const availSeats = Array.from(g.querySelectorAll('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])'));
-                        const letters = availSeats.map(b => (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase());
-                        
-                        let pick = null;
-                        if (letters.includes('A') && letters.includes('D')) pick = availSeats.find(b => ['A', 'D'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
-                        else if (letters.includes('B') && letters.includes('C')) pick = availSeats.find(b => ['B', 'C'].includes((b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase()));
-
-                        if (pick) {
+                } else if (carList.length > 0) {
+                    // 当前没有任何车厢展开：按 1 -> 2 -> 3 -> 4 -> 5 顺次展开第一个未探查车厢 (1200ms 防抖)
+                    if (now - lastCarSwitchTime > 1200) {
+                        const targetCarObj = carList.find(c => !visitedCars.has(c.num)) || carList[0];
+                        if (targetCarObj) {
+                            lastCarSwitchTime = now;
                             isActionPending = true;
                             lastActionTime = now;
-                            safeClick(pick);
-                            showHUD(`🎯 候补锁定：偶数前后对坐席位！`, 'rgba(40, 167, 69, 0.95)');
+                            safeClick(targetCarObj.btn);
+                            showHUD(`🔍 正在探查 ${targetCarObj.num} 号车厢...`, 'rgba(0, 122, 255, 0.95)');
                             return;
                         }
-                    }
-
-                    // 3. 选当前车厢任意偶数排座位
-                    for (const g of evenGroups) {
-                        const avail = g.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
-                        if (avail) {
-                            isActionPending = true;
-                            lastActionTime = now;
-                            safeClick(avail);
-                            showHUD(`🎯 候补锁定：偶数排席位...`, 'rgba(40, 167, 69, 0.95)');
-                            return;
-                        }
-                    }
-
-                    // 4. 当前车厢若完全没有可用偶数座位：平滑切换到其他车厢探查 (单向切换，防震荡)
-                    const otherCarBtn = carriageContainers.find(b => b !== currentExpandedCarBtn && !isCarriageExpanded(b));
-                    if (otherCarBtn && fallbackSwitchedCarId !== otherCarBtn.innerText) {
-                        fallbackSwitchedCarId = otherCarBtn.innerText;
-                        isActionPending = true;
-                        lastActionTime = now;
-                        safeClick(otherCarBtn);
-                        showHUD(`🔄 当前车厢无可用偶数座，正在平滑切换到其他车厢...`, 'rgba(255, 149, 0, 0.95)');
-                        return;
-                    }
-
-                    // 5. 保底：选当前车厢任意剩余空位
-                    const anyAvail = carCard.querySelector('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])');
-                    if (anyAvail) {
-                        isActionPending = true;
-                        lastActionTime = now;
-                        safeClick(anyAvail);
-                        showHUD(`💺 锁定席位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
-                        return;
-                    }
-                } else if (carriageContainers.length > 0) {
-                    // 没有展开任何车厢时，默认展开 4 号车或 1 号车
-                    const car4 = carriageContainers.find(b => (b.innerText || '').includes('4号'));
-                    const targetBtn = car4 || carriageContainers[0];
-                    if (targetBtn) {
-                        isActionPending = true;
-                        lastActionTime = now;
-                        safeClick(targetBtn);
-                        showHUD(`🔍 正在初始化展开车厢...`, 'rgba(0, 122, 255, 0.95)');
-                        return;
                     }
                 }
             }
