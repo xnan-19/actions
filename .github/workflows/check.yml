@@ -6,6 +6,10 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
+      test_bark:
+        description: '是否立即发送 Bark 测试推送 (true/false)'
+        required: false
+        default: 'false'
       target_dates:
         description: '监控目标日期 (多日期用逗号分隔，如 2026-10-31,2026-11-01)'
         required: true
@@ -37,6 +41,7 @@ jobs:
       - name: Run ticket monitor
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
+          TEST_BARK: ${{ github.event.inputs.test_bark || 'false' }}
           TARGET_DATES: ${{ github.event.inputs.target_dates || '2026-10-31' }}
           TICKETS_COUNT: ${{ github.event.inputs.tickets_count || '2' }}
         run: python .github/workflows/monitor.py
