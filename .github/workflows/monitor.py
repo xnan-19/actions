@@ -374,15 +374,21 @@ def execute_monitor():
         log(f"正在扫描日期: {date_str} ...")
         inv_data = search_inventory(date_str, total=TICKETS_COUNT)
         if not inv_data or not inv_data.get("services"):
+            log(f"日期 {date_str} 未查询到车次数据")
             continue
 
+        services = inv_data.get("services", [])
+        log(f"日期 {date_str} 共检索到 {len(services)} 个车次:")
+        for s in services:
+            log(f"  • {s.get('name')} (ID: {s.get('serviceId')}) | 状态: {s.get('state')} | 是否可订: {s.get('beforeDeadline')}")
+
         available_services = [
-            s for s in inv_data["services"]
+            s for s in services
             if s.get("beforeDeadline") and s.get("state") == "ORDINARY"
         ]
 
         if not available_services:
-            log(f"日期 {date_str} 暂无可预订车次")
+            log(f"👉 判定: 日期 {date_str} 所有班次目前均为满席 (无退票)")
             continue
 
         log(f"🔥 发现 {len(available_services)} 个可用班次！")
