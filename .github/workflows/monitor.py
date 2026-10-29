@@ -206,19 +206,106 @@ def create_booking_order(session_id, token):
     return None, None
 
 
+def find_best_even_seats(date_str, service_id, target_count=2):
+    url = f"https://common-api.sagano.linktivity.io/v1/inventories/{date_str}/services/{service_id}?product_id=51"
+    headers = {
+        "Origin": "https://file.sagano.linktivity.io",
+        "Referer": "https://file.sagano.linktivity.io/",
+        "User-Agent": "Mozilla/5.0"
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            cars = res.json().get("car_inventories", [])
+            all_vacant = []
+            for car in cars:
+                car_id = int(car.get("logical_car_id", 0))
+                for arr in car.get("arrangements", []):
+                    if arr.get("arrangement_state") == "ARRANGEABLE" and arr.get("reservation_state") == "VACANT":
+                        group = int(arr.get("seat_group_id", 0))
+                        seat = arr.get("seat_id", "").strip().upper()
+                        is_even = (group % 2 == 0)
+                        all_vacant.append({
+                            "carId": car_id,
+                            "group": group,
+                            "seat": seat,
+                            "isEven": is_even
+                        })
+
+            if len(all_vacant) < target_count:
+                return None, "余票不足"
+
+            best_pair = None
+            highest_score = -1
+            best_desc = ""
+
+            for i in range(len(all_vacant)):
+                for j in range(i + 1, len(all_vacant)):
+                    s1 = all_vacant[i]
+                    s2 = all_vacant[j]
+                    same_car = (s1["carId"] == s2["carId"])
+                    both_even = (s1["isEven"] and s2["isEven"])
+                    same_group = (s1["group"] == s2["group"])
+                    adjacent_even = (abs(s1["group"] - s2["group"]) == 2)
+                    is_pair = same_group and (
+                        (s1["seat"] == "A" and s2["seat"] == "B") or (s1["seat"] == "B" and s2["seat"] == "A") or
+                        (s1["seat"] == "C" and s2["seat"] == "D") or (s1["seat"] == "D" and s2["seat"] == "C")
+                    )
+                    is_same_side = (
+                        (s1["seat"] in ["A", "B"] and s2["seat"] in ["A", "B"]) or
+                        (s1["seat"] in ["C", "D"] and s2["seat"] in ["C", "D"])
+                    )
+
+                    score = 0
+                    desc = ""
+                    if same_car:
+                        if both_even:
+                            if is_pair:
+                                score = 10000
+                                desc = f"🎯 偶数连座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['seat']})"
+                            elif adjacent_even and is_same_side:
+                                score = 8000
+                                desc = f"🎯 偶数前后座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['group']}{s2['seat']})"
+                            else:
+                                score = 6000
+                                desc = f"🎯 同车偶数座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['group']}{s2['seat']})"
+                        elif is_pair:
+                            score = 2500
+                            desc = f"💺 普通连座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['seat']})"
+                        else:
+                            score = 1000
+                            desc = f"💺 同车席位 ({s1['carId']}号车)"
+                    else:
+                        if both_even:
+                            score = 4000
+                            desc = f"🎯 跨车偶数座 ({s1['carId']}车{s1['group']}{s1['seat']} + {s2['carId']}车{s2['group']}{s2['seat']})"
+                        else:
+                            score = 500
+                            desc = f"💺 跨车席位 ({s1['carId']}车 + {s2['carId']}车)"
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_pair = (s1, s2)
+                        best_desc = desc
+
+            return best_pair, best_desc
+    except Exception as e:
+        log(f"查询列车座位库存异常: {e}")
+    return None, ""
+
+
 def send_bark_notification(service_name, date_str, seats_desc, pay_url):
     if not BARK_KEY:
         log("未配置 BARK_KEY，跳过 Bark 推送")
         return
 
-    title = urllib.parse.quote("🎉 岚山小火车抢票锁座成功！(保留15分钟)")
+    title = urllib.parse.quote("🎉 岚山小火车余票强提醒！(偶数座优先)")
     body_text = (
         f"车次: {service_name}\n"
         f"日期: {date_str}\n"
-        f"座位: {seats_desc}\n"
-        f"预订人: WANG XIN (2人同行)\n"
-        f"金额: ¥1,760 JPY\n"
-        f"点击通知直达【岚山小火车官方网站】输入 Visa 信用卡支付出票！"
+        f"席位: {seats_desc}\n"
+        f"乘车人: WANG XIN (2人同行)\n"
+        f"点击通知直达官方，自动锁定并直达 Visa 支付！"
     )
     body = urllib.parse.quote(body_text)
 
@@ -244,8 +331,8 @@ def execute_monitor():
         log("📢 触发 Bark 官方 DOM 自动化直达测试推送...")
         test_service = "SAGANO_01"
         test_date = "2026-10-31"
-        test_seats = "04车01号, 04车02号"
-        test_seats_param = urllib.parse.quote(test_seats)
+        test_seats = "🎯 偶数连座 (4号车 4C+4D)"
+        test_seats_param = urllib.parse.quote("4-4-C,4-4-D")
         pay_url = (
             f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
             f"?date={test_date}"
@@ -280,10 +367,17 @@ def execute_monitor():
         for srv in available_services:
             service_id = srv.get("serviceId")
             service_name = srv.get("name", service_id)
-            log(f"正在检索车次: {service_name} ({service_id}) ...")
+            log(f"正在智能检索最优车席: {service_name} ({service_id}) ...")
 
-            seats_desc = "04车01号, 04车02号"
-            seats_param = urllib.parse.quote(seats_desc)
+            best_pair, best_desc = find_best_even_seats(date_str, service_id, target_count=TICKETS_COUNT)
+            if best_pair:
+                s1, s2 = best_pair
+                seats_param = urllib.parse.quote(f"{s1['carId']}-{s1['group']}-{s1['seat']},{s2['carId']}-{s2['group']}-{s2['seat']}")
+                seats_display = best_desc
+            else:
+                seats_param = urllib.parse.quote("4-4-C,4-4-D")
+                seats_display = "优先偶数席位"
+
             pay_url = (
                 f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
                 f"?date={date_str}"
@@ -293,12 +387,12 @@ def execute_monitor():
                 f"&auto=1"
             )
 
-            log(f"🔗 生成官方 DOM 自动化直达链接: {pay_url}")
-            send_bark_notification(service_name, date_str, seats_desc, pay_url)
+            log(f"🔗 生成官方自动化直达链接: {pay_url}，席位策略: {seats_display}")
+            send_bark_notification(service_name, date_str, seats_display, pay_url)
             log("🎯 发现可用余票，已全自动发送强提醒通知！")
             return True
 
-    log("本次巡检结束，未发现或未成功锁定余票。")
+    log("本次巡检结束，未发现可用余票。")
     return False
 
 
