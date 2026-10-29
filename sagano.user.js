@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      17.3
-// @description  终极执行版：恢复经实战检验的阶段1路线与人数逻辑；直选GitHub推荐精确席位；毫秒差候补偶数座；直达Visa支付！
+// @version      17.5
+// @description  终极执行版：发车时间与车次精准锁定，带时间参数；直选GitHub推荐精确席位；毫秒差候补偶数座；直达Visa支付！
 // @author       Antigravity
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
@@ -83,6 +83,8 @@
 
     const targetDate = params.get('date') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_date') : null) || sessionStorage.getItem('sagano_date') || '2026-10-31';
     const targetService = params.get('serviceId') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_service') : null) || sessionStorage.getItem('sagano_service') || '';
+    const targetTrainName = params.get('train') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_train') : null) || sessionStorage.getItem('sagano_train') || '';
+    const targetTime = params.get('time') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_time') : null) || sessionStorage.getItem('sagano_time') || '';
     const targetUnits = parseInt(params.get('unitsCount') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_units') : null) || sessionStorage.getItem('sagano_units') || '2', 10);
     const targetSeatsParam = params.get('seats') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_seats') : null) || sessionStorage.getItem('sagano_seats') || '';
 
@@ -94,6 +96,14 @@
     if (params.get('serviceId')) {
         try { sessionStorage.setItem('sagano_service', params.get('serviceId')); } catch(e){}
         if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_service', params.get('serviceId'));
+    }
+    if (params.get('train')) {
+        try { sessionStorage.setItem('sagano_train', params.get('train')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_train', params.get('train'));
+    }
+    if (params.get('time')) {
+        try { sessionStorage.setItem('sagano_time', params.get('time')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_time', params.get('time'));
     }
     if (params.get('unitsCount')) {
         try { sessionStorage.setItem('sagano_units', params.get('unitsCount')); } catch(e){}
@@ -345,7 +355,7 @@
                 }
             }
 
-            // 2. 车次选择阶段
+            // 2. 车次选择阶段 (发车时间优先精准匹配，杜绝错选车次)
             if (!trainSelected) {
                 const trainBtns = Array.from(document.querySelectorAll('button')).filter(b => {
                     const t = (b.innerText || b.textContent || '').trim();
@@ -353,15 +363,31 @@
                 });
 
                 if (trainBtns.length > 0) {
-                    let targetTrain = trainBtns[0];
-                    if (targetService) {
-                        const matched = trainBtns.find(b => (b.outerHTML || '').includes(targetService) || (b.innerText || '').includes(targetService));
-                        if (matched) targetTrain = matched;
+                    let targetTrainBtn = null;
+
+                    // ① 优先按时间精准匹配 (例如 '17:10')
+                    if (targetTime) {
+                        targetTrainBtn = trainBtns.find(b => (b.innerText || b.textContent || '').includes(targetTime));
                     }
 
-                    safeClick(targetTrain);
-                    const trainText = (targetTrain.innerText || '').split('\n')[0].trim();
-                    showHUD(`✔ [2/4] 已选定车次：${trainText}，正在选座...`, 'rgba(40, 167, 69, 0.95)');
+                    // ② 其次按车次名/车次号匹配 (例如 '81号' 或 '嵯峨野81号')
+                    if (!targetTrainBtn && targetTrainName) {
+                        const m = targetTrainName.match(/\d+号?/);
+                        const numStr = m ? m[0] : targetTrainName;
+                        targetTrainBtn = trainBtns.find(b => (b.innerText || b.textContent || '').includes(numStr));
+                    }
+
+                    // ③ 再次按 serviceId 匹配
+                    if (!targetTrainBtn && targetService) {
+                        targetTrainBtn = trainBtns.find(b => (b.outerHTML || '').includes(targetService) || (b.innerText || '').includes(targetService));
+                    }
+
+                    // ④ 保底选第 1 个
+                    if (!targetTrainBtn) targetTrainBtn = trainBtns[0];
+
+                    safeClick(targetTrainBtn);
+                    const trainText = (targetTrainBtn.innerText || '').split('\n')[0].trim();
+                    showHUD(`✔ [2/4] 已锁定目标车次：${trainText} (${targetTime || ''})，正在选座...`, 'rgba(40, 167, 69, 0.95)');
 
                     const nextBtn = document.querySelector('div[class*="_footer_"] button:not([class*="outlined"]), footer button:last-child');
                     if (nextBtn && !nextBtn.disabled) {
