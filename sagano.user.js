@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      5.2
-// @description  收到Bark通知点开后，全自动精准点选路线、展开数量、设定2人、点击预约直达订单页！
+// @version      6.0
+// @description  收到Bark通知点开后，全自动精准点选路线、展开数量、设定2人、自动选车次、自动选座直达订单支付页！
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
 // @grant        none
@@ -25,8 +25,6 @@
         hud.innerHTML = text;
     }
 
-    showHUD('⚡【全自动抢票已启动】正在检索车票...', 'rgba(0, 122, 255, 0.95)');
-
     const url = new URL(window.location.href);
     const params = url.searchParams;
 
@@ -34,13 +32,12 @@
     const targetService = params.get('serviceId') || sessionStorage.getItem('sagano_service_id') || '';
     const targetUnits = parseInt(params.get('unitsCount') || '2', 10);
 
-    sessionStorage.setItem('sagano_target_date', targetDate);
-    if (targetService) sessionStorage.setItem('sagano_service_id', targetService);
-
     // =============================================================
     // 阶段 1: 活动详情页 (自动选路线、翻月、选日期、选人数、进入预约)
     // =============================================================
     if (window.location.pathname.includes('/activity/')) {
+        showHUD('⚡【全自动抢票已启动】正在检索车票...', 'rgba(0, 122, 255, 0.95)');
+
         let targetMonth = '11月';
         let targetDay = '10';
         if (targetDate && targetDate.includes('-')) {
@@ -101,7 +98,6 @@
                     targetBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
                     targetBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-                    // 检查按钮是否已高亮，或数量区域是否已展开
                     const isChecked = targetBtn.className.includes('checked') || targetBtn.className.includes('active');
                     const hasQuantity = !!document.querySelector('button use[xlink\\:href*="plus"], button use[*|href*="plus"]');
 
@@ -138,7 +134,7 @@
 
                 if (submitBtn) {
                     submitDone = true;
-                    showHUD('🎉 人数与路线已全部就绪！正在极速进入车次订单页...', 'rgba(40, 167, 69, 0.95)');
+                    showHUD('🎉 正在极速冲刺进入车次与选座页...', 'rgba(40, 167, 69, 0.95)');
                     submitBtn.click();
                     submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     clearInterval(mainTimer);
@@ -150,29 +146,111 @@
     }
 
     // =============================================================
-    // 阶段 2: Linktivity 选座系统 (自动确认直达订单页)
+    // 阶段 2: Linktivity 车次与选座系统 (全自动选车次、选车厢、选座、确认)
     // =============================================================
     if (window.location.hostname.includes('linktivity.io')) {
-        showHUD('🚀 抵达选座系统，正在锁定车次与座位...', 'rgba(40, 167, 69, 0.95)');
-        const seatTimer = setInterval(() => {
-            const allButtons = document.querySelectorAll('button');
-            for (const b of allButtons) {
-                const text = (b.innerText || '').trim();
-                if ((text.includes('確定') || text.includes('次へ') || text.includes('進む') || text.includes('予約')) && !b.disabled) {
-                    b.click();
-                    clearInterval(seatTimer);
-                    break;
+        showHUD('🚀 抵达车次与选座系统，正在极速匹配...', 'rgba(0, 122, 255, 0.95)');
+
+        let trainSelected = false;
+        let carriageExpanded = false;
+        let seatsClicked = 0;
+        let confirmClicked = false;
+
+        const linktivityTimer = setInterval(() => {
+            // ---------------------------------------------------------
+            // ① 步骤一：自动选车次并点击「次へ」
+            // ---------------------------------------------------------
+            if (!trainSelected) {
+                // 查找所有车次按钮（带有嵯峨野或时间的可用按钮）
+                const trainBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                    const t = (b.innerText || b.textContent || '').trim();
+                    return (t.includes('嵯峨野') || (t.includes('号') && t.includes(':'))) && !b.disabled;
+                });
+
+                if (trainBtns.length > 0) {
+                    // 优先选择包含目标车次 ID 或未禁用的首个车次
+                    let targetTrain = trainBtns[0];
+                    if (targetService) {
+                        const matched = trainBtns.find(b => (b.outerHTML || '').includes(targetService));
+                        if (matched) targetTrain = matched;
+                    }
+
+                    targetTrain.click();
+                    const trainText = (targetTrain.innerText || '').split('\n')[0].trim();
+                    showHUD(`✔ 已自动选中车次：${trainText}，正在下一步...`, 'rgba(40, 167, 69, 0.95)');
+
+                    // 点击底部的「次へ」按钮进入选座
+                    const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                        const t = (b.innerText || '').trim();
+                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled;
+                    });
+
+                    if (nextBtn) {
+                        nextBtn.click();
+                        trainSelected = true;
+                    }
+                    return;
+                }
+            }
+
+            // ---------------------------------------------------------
+            // ② 步骤二：选座页面（自动展开车厢并勾选座位）
+            // ---------------------------------------------------------
+            const carriageBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                const t = (b.innerText || '').trim();
+                return t.includes('号車') || t.includes('Car No');
+            });
+
+            if (carriageBtns.length > 0 && seatsClicked < targetUnits) {
+                // 展开第 1 个可用车厢（或包含 1号車 / 4号車）
+                if (!carriageExpanded) {
+                    carriageBtns[0].click();
+                    carriageExpanded = true;
+                    showHUD('✔ 已自动展开车厢，正在极速锁座...', 'rgba(40, 167, 69, 0.95)');
+                    return;
+                }
+
+                // 在展开的座位图中，查找所有可点击的空位（非禁用且非占用）
+                const allSeatDivs = Array.from(document.querySelectorAll('div, button')).filter(el => {
+                    const cls = el.className || '';
+                    return (typeof cls === 'string') && cls.includes('seat_') && !cls.includes('List') && !cls.includes('Line');
+                });
+
+                for (const seatEl of allSeatDivs) {
+                    if (seatsClicked >= targetUnits) break;
+                    // 点击空闲座位
+                    seatEl.click();
+                    seatEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                    seatsClicked++;
+                }
+            }
+
+            // ---------------------------------------------------------
+            // ③ 步骤三：点击底部的「次へ」或「確定」进入订单支付页
+            // ---------------------------------------------------------
+            const actionBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                const t = (b.innerText || '').trim();
+                return (t.includes('次へ') || t.includes('確定') || t.includes('予約確認') || t.includes('進む') || t.includes('Next')) && !b.disabled;
+            });
+
+            if (actionBtns.length > 0 && !confirmClicked) {
+                const btn = actionBtns[actionBtns.length - 1]; // 通常在最底部
+                btn.click();
+                showHUD('🎉 座位已锁定！正在火速直达订单支付页...', 'rgba(40, 167, 69, 0.95)');
+                if ((btn.innerText || '').includes('確定') || (btn.innerText || '').includes('確認')) {
+                    confirmClicked = true;
+                    clearInterval(linktivityTimer);
                 }
             }
         }, 200);
 
-        setTimeout(() => clearInterval(seatTimer), 25000);
+        setTimeout(() => clearInterval(linktivityTimer), 35000);
     }
 
     // =============================================================
     // 阶段 3: 订单填写与支付页
     // =============================================================
     if (window.location.pathname.includes('/booking/pay')) {
-        showHUD('🎉 恭喜！已成功直接停留在订单支付页！', 'rgba(40, 167, 69, 0.95)');
+        showHUD('🎉 恭喜！已全自动抵达订单支付页！请核对并支付！', 'rgba(40, 167, 69, 0.95)');
     }
 })();
