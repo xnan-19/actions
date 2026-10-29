@@ -248,14 +248,23 @@ def find_best_even_seats(date_str, service_id, target_count=2):
                     same_car = (s1["carId"] == s2["carId"])
                     both_even = (s1["isEven"] and s2["isEven"])
                     same_group = (s1["group"] == s2["group"])
-                    adjacent_even = (abs(s1["group"] - s2["group"]) == 2)
+                    
+                    # 横向连座: 同排 A+B 或 C+D
                     is_pair = same_group and (
                         (s1["seat"] == "A" and s2["seat"] == "B") or (s1["seat"] == "B" and s2["seat"] == "A") or
                         (s1["seat"] == "C" and s2["seat"] == "D") or (s1["seat"] == "D" and s2["seat"] == "C")
                     )
-                    is_same_side = (
-                        (s1["seat"] in ["A", "B"] and s2["seat"] in ["A", "B"]) or
-                        (s1["seat"] in ["C", "D"] and s2["seat"] in ["C", "D"])
+                    
+                    # 纵向对坐 (前后座): 同排 A+D 或 B+C
+                    is_face_to_face = same_group and (
+                        (s1["seat"] == "A" and s2["seat"] == "D") or (s1["seat"] == "D" and s2["seat"] == "A") or
+                        (s1["seat"] == "B" and s2["seat"] == "C") or (s1["seat"] == "C" and s2["seat"] == "B")
+                    )
+                    
+                    # 相邻偶数排同侧前后座 (如 2排A 和 4排A)
+                    adjacent_even_same_side = (abs(s1["group"] - s2["group"]) == 2) and (
+                        (s1["seat"] in ["A", "D"] and s2["seat"] in ["A", "D"]) or
+                        (s1["seat"] in ["B", "C"] and s2["seat"] in ["B", "C"])
                     )
 
                     score = 0
@@ -265,15 +274,18 @@ def find_best_even_seats(date_str, service_id, target_count=2):
                             if is_pair:
                                 score = 10000
                                 desc = f"🎯 偶数连座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['seat']})"
-                            elif adjacent_even and is_same_side:
+                            elif is_face_to_face or adjacent_even_same_side:
                                 score = 8000
                                 desc = f"🎯 偶数前后座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['group']}{s2['seat']})"
                             else:
                                 score = 6000
-                                desc = f"🎯 同车偶数座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['group']}{s2['seat']})"
+                                desc = f"🎯 同车偶数分开座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['group']}{s2['seat']})"
                         elif is_pair:
                             score = 2500
                             desc = f"💺 普通连座 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['seat']})"
+                        elif is_face_to_face:
+                            score = 2000
+                            desc = f"💺 普通对坐 ({s1['carId']}号车 {s1['group']}{s1['seat']}+{s2['seat']})"
                         else:
                             score = 1000
                             desc = f"💺 同车席位 ({s1['carId']}号车)"
