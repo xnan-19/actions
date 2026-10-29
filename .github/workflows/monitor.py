@@ -406,20 +406,19 @@ def execute_monitor():
             log(f"👉 判定: 日期 {date_str} 所有班次目前均为满席 (无退票)")
             continue
 
-        log(f"🔥 发现 {len(available_services)} 个可用班次！")
         for srv in available_services:
             service_id = srv["serviceId"]
             service_name = srv["name"]
-            log(f"正在智能检索最优车席: {service_name} ({service_id}) ...")
 
             best_pair, best_desc = find_best_even_seats(date_str, service_id, target_count=TICKETS_COUNT)
-            if best_pair:
-                s1, s2 = best_pair
-                seats_param = urllib.parse.quote(f"{s1['carId']}-{s1['group']}-{s1['seat']},{s2['carId']}-{s2['group']}-{s2['seat']}")
-                seats_display = best_desc
-            else:
-                seats_param = urllib.parse.quote("4-4-C,4-4-D")
-                seats_display = "优先偶数席位"
+            if not best_pair:
+                log(f"  • {service_name} (ID: {service_id}) -> 经逐座核对: 当前无可用空座 (已售罄❌)")
+                continue
+
+            s1, s2 = best_pair
+            seats_param = urllib.parse.quote(f"{s1['carId']}-{s1['group']}-{s1['seat']},{s2['carId']}-{s2['group']}-{s2['seat']}")
+            seats_display = best_desc
+            log(f"🔥【真实现票】{service_name} 成功匹配到优质席位: {seats_display}！")
 
             pay_url = (
                 f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
@@ -430,9 +429,9 @@ def execute_monitor():
                 f"&auto=1"
             )
 
-            log(f"🔗 生成官方自动化直达链接: {pay_url}，席位策略: {seats_display}")
+            log(f"🔗 生成官方自动化直达链接: {pay_url}")
             send_bark_notification(service_name, date_str, seats_display, pay_url)
-            log("🎯 发现可用余票，已全自动发送强提醒通知！")
+            log("🎯 发现可用真实退票，已全自动发送强提醒通知！")
             return True
 
     log("本次巡检结束，未发现可用余票。")
