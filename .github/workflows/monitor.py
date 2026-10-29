@@ -238,6 +238,24 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
 
 
 def execute_monitor():
+    if os.getenv("TEST_BARK", "").lower() in ["true", "1"]:
+        log("📢 触发 Bark 测试推送模式...")
+        test_service = "嵯峨野 01 号 (演示车次)"
+        test_date = "2026-10-31"
+        test_seats = "04车01号, 04车02号"
+        pay_url = (
+            f"https://xnan-19.github.io/actions/checkout.html?"
+            f"clientSecret=pi_demo_test_secret"
+            f"&bookingId=BKG_DEMO_123456"
+            f"&date={test_date}"
+            f"&service={urllib.parse.quote(test_service)}"
+            f"&seats={urllib.parse.quote(test_seats)}"
+            f"&amount=%C2%A51,760%20JPY"
+        )
+        send_bark_notification(test_service, test_date, test_seats, pay_url)
+        log("✅ Bark 测试推送已成功发出！请在手机上查看！")
+        return True
+
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
     log(f"开始监控岚山小火车余票，监控日期列表: {dates}，人数: {TICKETS_COUNT}")
 
