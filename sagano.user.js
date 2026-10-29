@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      17.0
-// @description  终极执行版：优先执行GitHub扫描推荐的精确席位；毫秒差被抢时自动触发偶数优先候补；全车厢防卡死防震荡，直达Visa支付！
+// @version      17.1
+// @description  终极执行版：全方位强化日历日期/路线/人数多层级容错匹配；优先直选GitHub推荐精确席位；毫秒差候补偶数座；直达Visa支付！
 // @author       Antigravity
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
@@ -123,18 +123,18 @@
     }
 
     // =============================================================
-    // 阶段 1: 官方活动详情页 (自动选路线、翻月、选日期、选人数、进入选座)
+    // 阶段 1: 官方活动详情页 (自动选日期、选路线、选人数、进入选座)
     // =============================================================
     if (window.location.pathname.includes('/activity/')) {
         showHUD('⚡【全自动抢票已启动】正在检索车票...', 'rgba(0, 122, 255, 0.95)');
 
-        let targetMonth = '10月';
-        let targetDay = '31';
+        let targetMonthStr = '10';
+        let targetDayStr = '31';
         if (targetDate && targetDate.includes('-')) {
-            const p = targetDate.split('-');
-            if (p.length === 3) {
-                targetMonth = parseInt(p[1], 10) + '月';
-                targetDay = String(parseInt(p[2], 10));
+            const parts = targetDate.split('-');
+            if (parts.length === 3) {
+                targetMonthStr = String(parseInt(parts[1], 10));
+                targetDayStr = String(parseInt(parts[2], 10));
             }
         }
 
@@ -142,73 +142,117 @@
         let routeDone = false;
         let unitCount = 0;
         let submitDone = false;
+        let lastCalendarAction = 0;
 
         const mainTimer = setInterval(() => {
-            // ① 自动翻到目标月份
-            const monthHeader = document.querySelector('[class*="dateTableCurrent"], [class*="month"], [class*="dateTableHead"] p');
-            if (monthHeader) {
-                const curMonth = (monthHeader.innerText || monthHeader.textContent || '');
-                if (!curMonth.includes(targetMonth)) {
-                    const nextButtons = document.querySelectorAll('button[class*="Next"], button[class*="next"], [class*="dateTableHead"] button');
-                    if (nextButtons.length > 0) {
-                        const nextBtn = nextButtons[nextButtons.length - 1];
-                        if (!nextBtn.disabled) {
-                            nextBtn.click();
-                            showHUD(`📅 正在翻月切换到 ${targetMonth}...`, 'rgba(255, 149, 0, 0.95)');
+            const now = Date.now();
+
+            // ① 选日期：多层级容错匹配
+            if (!dateDone) {
+                // 1. 检查是否已经处于选中状态 (是否有 active/selected 的日期等于 targetDayStr)
+                const selectedDayEl = Array.from(document.querySelectorAll('[class*="selected"], [class*="active"], [aria-selected="true"]')).find(el => {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    const lines = txt.split('\n').map(s => s.trim());
+                    return lines.some(l => l === targetDayStr || l === `0${targetDayStr}`);
+                });
+
+                if (selectedDayEl) {
+                    dateDone = true;
+                    showHUD(`✔ 目标日期已选定：${targetMonthStr}月${targetDayStr}日`, 'rgba(40, 167, 69, 0.95)');
+                } else {
+                    // 2. 检查月份是否需要翻月
+                    const monthEls = Array.from(document.querySelectorAll('[class*="month"], [class*="Month"], [class*="dateTableHead"], [class*="header"] p, h2, h3, p'));
+                    const currentMonthEl = monthEls.find(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return (t.includes('年') || t.includes('/') || t.includes('-')) && (t.includes('月') || /\d{4}/.test(t));
+                    });
+
+                    let needFlipMonth = false;
+                    if (currentMonthEl) {
+                        const mText = (currentMonthEl.innerText || currentMonthEl.textContent || '').trim();
+                        const matchCurrentMonth = mText.includes(`${targetMonthStr}月`) || mText.includes(`/${targetMonthStr}`) || mText.includes(`-${targetMonthStr}`);
+                        if (!matchCurrentMonth && (now - lastCalendarAction > 600)) {
+                            needFlipMonth = true;
+                        }
+                    }
+
+                    if (needFlipMonth) {
+                        const nextMonthBtns = Array.from(document.querySelectorAll('button[class*="Next"], button[class*="next"], [class*="dateTableHead"] button, button[aria-label*="next"]'));
+                        if (nextMonthBtns.length > 0) {
+                            const nextBtn = nextMonthBtns[nextMonthBtns.length - 1];
+                            safeClick(nextBtn);
+                            lastCalendarAction = now;
+                            showHUD(`📅 正在切换月份到 ${targetMonthStr} 月...`, 'rgba(255, 149, 0, 0.95)');
                             return;
                         }
                     }
-                } else if (!dateDone) {
-                    const dayButtons = document.querySelectorAll('button[class*="dateTableDayButton"], [class*="dateTableBodyCell"] button, [class*="day"] button');
-                    for (const btn of dayButtons) {
-                        if (btn.hasAttribute('disabled') || btn.disabled) continue;
-                        const dText = (btn.innerText || btn.textContent || '').trim();
-                        if (dText === targetDay) {
-                            btn.click();
-                            dateDone = true;
-                            showHUD(`✔ 已成功选中日期：${targetMonth}${targetDay}日`, 'rgba(40, 167, 69, 0.95)');
-                            break;
+
+                    // 3. 在日历单元格中寻找目标日期
+                    const dayCandidates = Array.from(document.querySelectorAll('button, td, div[role="button"], [class*="dateTableDayButton"], [class*="dateTableBodyCell"] button, [class*="day"] button'));
+                    const matchedBtn = dayCandidates.find(b => {
+                        const dataDate = b.getAttribute('data-date') || b.getAttribute('data-day') || '';
+                        if (dataDate && (dataDate === targetDate || dataDate.endsWith(`-${targetDayStr}`) || dataDate.endsWith(`-0${targetDayStr}`))) {
+                            return true;
                         }
+                        const txt = (b.innerText || b.textContent || '').trim();
+                        const lines = txt.split('\n').map(s => s.trim()).filter(Boolean);
+                        if (lines.length > 0) {
+                            return lines[0] === targetDayStr || lines[0] === `0${targetDayStr}` || lines.some(l => l === targetDayStr);
+                        }
+                        return false;
+                    });
+
+                    if (matchedBtn) {
+                        safeClick(matchedBtn);
+                        dateDone = true;
+                        lastCalendarAction = now;
+                        showHUD(`✔ 成功点击选中日期：${targetMonthStr}月${targetDayStr}日`, 'rgba(40, 167, 69, 0.95)');
                     }
                 }
             }
 
-            // ② 自动选择路线：点击嵯峨野小火车路线
+            // ② 自动选择路线 (点击嵯峨野观光铁道路线卡片)
             if (!routeDone) {
-                const routeButtons = Array.from(document.querySelectorAll('button[class*="PlanPicker"], button')).filter(b => {
-                    const t = (b.innerText || '').trim();
-                    return t.includes('嵯峨野') || t.includes('トロッコ');
+                const routeCandidates = Array.from(document.querySelectorAll('button[class*="PlanPicker"], [class*="planPicker"], button, div[role="button"], li')).filter(b => {
+                    const t = (b.innerText || b.textContent || '').trim();
+                    return (t.includes('嵯峨') && t.includes('亀岡')) || t.includes('嵯峨野') || t.includes('トロッコ');
                 });
-                if (routeButtons.length > 0) {
-                    routeButtons[0].click();
+                if (routeCandidates.length > 0) {
+                    safeClick(routeCandidates[0]);
                     routeDone = true;
-                    showHUD('✔ 已选择路线：嵯峨野观光铁道', 'rgba(40, 167, 69, 0.95)');
+                    showHUD('✔ 路线已选中：嵯峨野观光铁道', 'rgba(40, 167, 69, 0.95)');
                 }
             }
 
             // ③ 自动增加人数到指定数量 (默认2人)
             if (unitCount < targetUnits) {
-                const plusButtons = document.querySelectorAll('button[class*="Plus"], button[class*="plus"], button[aria-label*="plus"]');
-                if (plusButtons.length > 0) {
-                    const btn = plusButtons[0];
-                    if (!btn.disabled) {
-                        btn.click();
+                const plusBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                    const cls = (b.className || '').toLowerCase();
+                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                    const txt = (b.innerText || '').trim();
+                    const hasPlusIcon = !!b.querySelector('svg, i, use[href*="plus"], use[*|href*="plus"]');
+                    return cls.includes('plus') || aria.includes('plus') || txt === '+' || hasPlusIcon;
+                });
+                if (plusBtns.length > 0) {
+                    const plusBtn = plusBtns[0];
+                    if (!plusBtn.disabled) {
+                        safeClick(plusBtn);
                         unitCount++;
-                        showHUD(`✔ 正在添加乘车人数 (${unitCount}/${targetUnits})...`, 'rgba(0, 122, 255, 0.95)');
+                        showHUD(`👥 已设定乘车人数 (${unitCount}/${targetUnits})...`, 'rgba(0, 122, 255, 0.95)');
                     }
                 }
             }
 
-            // ④ 提交进入选座页面
-            if (dateDone && routeDone && unitCount >= targetUnits && !submitDone) {
+            // ④ 提交进入下一步 (次へ / 予約へ進む / 選択する)
+            if ((dateDone || routeDone) && unitCount >= targetUnits && !submitDone) {
                 const submitButtons = Array.from(document.querySelectorAll('button')).filter(b => {
-                    const t = (b.innerText || '').trim();
-                    return (t.includes('次へ') || t.includes('予約へ進む') || t.includes('選択する') || t.includes('日程の確定')) && !b.disabled;
+                    const t = (b.innerText || b.textContent || '').trim();
+                    return (t.includes('次へ') || t.includes('予約へ進む') || t.includes('選択する') || t.includes('日程の確定') || t.includes('Checkout')) && !b.disabled;
                 });
                 if (submitButtons.length > 0) {
-                    submitButtons[0].click();
                     submitDone = true;
-                    showHUD('🚀 正在进入官方选座席位图...', 'rgba(40, 167, 69, 0.95)');
+                    safeClick(submitButtons[0]);
+                    showHUD('🚀 正在极速冲刺进入车次与选座席位图...', 'rgba(40, 167, 69, 0.95)');
                     clearInterval(mainTimer);
                 }
             }
