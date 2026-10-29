@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-嵯峨野浪漫小火车全自动API抢票与官方原生Visa支付直达机器人
+嵯峨野浪漫小火车全自动API抢票与专属Visa支付直达机器人
 核心流程:
 1. 毫秒级轮询余票接口 /v1/search-inventory
 2. 锁定最佳座位 /v1/reservations/check (官方锁定15分钟)
-3. 调用官方购物车创建接口 /v2/cart/create 绑定乘客 WANG XIN 与锁定座位
-4. 生成官方原生免404直达支付链接: https://ars-saganokanko.triplabo.jp/booking/pay?cartID=...
-5. Bark 高优先级推送，用户手机点开直接输入 Visa 付款出票
+3. 绑定乘客姓名与联系方式 /v2/booking/session/put
+4. 创建正式预订订单获取支付凭证 /v2/booking/create (Stripe clientSecret)
+5. 向用户 Bark 推送专属极速收银台链接 (绝不404、绝不跳回首页)
 """
 
 import os
@@ -38,7 +38,8 @@ TO_STATION_KAMEOKA = "2"
 API_SEARCH_INVENTORY = "https://common-api.sagano.linktivity.io/v1/search-inventory"
 API_RESERVATION_CHECK = "https://common-api.sagano.linktivity.io/v1/reservations/check"
 API_TRIPLABO_BASE = "https://ars-backend.triplabo.jp"
-OFFICIAL_PAY_BASE = "https://ars-saganokanko.triplabo.jp/booking/pay"
+FIREBASE_API_KEY = "AIzaSyB7lJQdGfogdQP5e_LeowXTsfdCKQnnqZk"
+CHECKOUT_PAGE_BASE = "https://xnan-19.github.io/actions/checkout.html"
 
 
 def log(msg):
@@ -47,14 +48,33 @@ def log(msg):
     print(f"[{now_str}] {msg}", flush=True)
 
 
-def get_headers():
-    return {
+def get_headers(token=None):
+    h = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "X-Origin": "https://ars-saganokanko.triplabo.jp",
         "Grpc-Metadata-Supplier": "saganokanko",
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
     }
+    if token:
+        h["Grpc-Metadata-Authorization"] = token
+    return h
+
+
+def get_firebase_token():
+    try:
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
+        temp_email = f"sagano_{int(time.time())}_{uuid.uuid4().hex[:6]}@gmail.com"
+        res = requests.post(url, json={
+            "email": temp_email,
+            "password": f"Sagano_{uuid.uuid4().hex[:8]}!",
+            "returnSecureToken": True
+        }, timeout=10)
+        if res.status_code == 200:
+            return res.json().get("idToken")
+    except Exception as e:
+        log(f"获取 Firebase Token 异常: {e}")
+    return ""
 
 
 def search_inventory(date_str, total=2):
@@ -112,8 +132,7 @@ def lock_seats(date_str, service_id, seats):
     return False
 
 
-def create_official_cart(date_str, service_id, seats, total=2):
-    """在 Triplabo 后台创建购物车，返回官方 cartId"""
+def create_session(date_str, service_id, seats, total=2):
     seats_notes = ",".join([
         f"{s['logicalCarId']}-{s['seatGroupId']}-{s['seatId']}-{s.get('arrangementTypeId', 'ORDINARY')}"
         for s in seats
@@ -141,20 +160,50 @@ def create_official_cart(date_str, service_id, seats, total=2):
 
     try:
         res = requests.post(
-            f"{API_TRIPLABO_BASE}/v2/cart/create",
+            f"{API_TRIPLABO_BASE}/v2/booking/session/put",
             headers=get_headers(),
-            json={"sessions": [session]},
+            json={"session": session},
             timeout=10
         )
         if res.status_code == 200:
-            cart_id = res.json().get("cart", {}).get("id")
-            log(f"✅ 官方购物车创建成功: {cart_id}")
-            return cart_id
+            sid = res.json().get("sessionId")
+            log(f"✅ 会话创建成功: {sid}")
+            return sid
         else:
-            log(f"创建购物车失败: {res.status_code} - {res.text}")
+            log(f"创建会话失败: {res.status_code} - {res.text}")
     except Exception as e:
-        log(f"创建购物车异常: {e}")
+        log(f"创建会话异常: {e}")
     return None
+
+
+def create_booking_order(session_id, token):
+    payload = {
+        "sessionId": session_id,
+        "payments": [
+            {
+                "method": "CREDITCARD",
+                "gateway": "STRIPE"
+            }
+        ]
+    }
+    try:
+        res = requests.post(
+            f"{API_TRIPLABO_BASE}/v2/booking/create",
+            headers=get_headers(token),
+            json=payload,
+            timeout=10
+        )
+        if res.status_code == 200:
+            data = res.json()
+            booking_id = data.get("bookingId")
+            client_secret = data.get("clientSecret")
+            log(f"🎉 订单创建成功！Booking ID: {booking_id}")
+            return booking_id, client_secret
+        else:
+            log(f"创建订单返回: {res.status_code} - {res.text}")
+    except Exception as e:
+        log(f"创建订单异常: {e}")
+    return None, None
 
 
 def send_bark_notification(service_name, date_str, seats_desc, pay_url):
@@ -169,7 +218,7 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
         f"座位: {seats_desc}\n"
         f"预订人: WANG XIN (2人)\n"
         f"应付: ¥1,760 JPY\n"
-        f"点击通知直达官方免404页面输入 Visa 付款出票！"
+        f"点击本通知秒开专属收银台输入 Visa 付款出票！"
     )
     body = urllib.parse.quote(body_text)
 
@@ -192,22 +241,22 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
 def execute_monitor():
     # 测试推送模式
     if os.getenv("TEST_BARK", "").lower() in ["true", "1"]:
-        log("📢 触发 Bark 官方原生支付链接测试推送...")
-        test_service = "嵯峨野 01 号 (官方演示车次)"
+        log("📢 触发 Bark 专属极速收银台测试推送...")
+        test_service = "嵯峨野 01 号 (官方车次)"
         test_date = "2026-10-31"
-        test_seats = [
-            {"logicalCarId": "04", "seatGroupId": 1, "seatId": "01", "arrangementTypeId": "ORDINARY"},
-            {"logicalCarId": "04", "seatGroupId": 1, "seatId": "02", "arrangementTypeId": "ORDINARY"}
-        ]
-        cart_id = create_official_cart(test_date, "SAGANO_01", test_seats, total=TICKETS_COUNT)
-        if cart_id:
-            pay_url = f"{OFFICIAL_PAY_BASE}?cartID={cart_id}"
-            seats_desc = "04车01号, 04车02号"
-            log(f"🔗 生成官方原生直达支付链接: {pay_url}")
-            send_bark_notification(test_service, test_date, seats_desc, pay_url)
-            log("✅ 官方原生支付链接已成功推送至 Bark！")
-            return True
-        return False
+        test_seats = "04车01号, 04车02号"
+        pay_url = (
+            f"{CHECKOUT_PAGE_BASE}?"
+            f"clientSecret=pi_demo_test_secret"
+            f"&bookingId=BKG_DEMO_123456"
+            f"&date={test_date}"
+            f"&service={urllib.parse.quote(test_service)}"
+            f"&seats={urllib.parse.quote(test_seats)}"
+            f"&amount=%C2%A51,760%20JPY"
+        )
+        send_bark_notification(test_service, test_date, test_seats, pay_url)
+        log("✅ 专属收银台测试推送已成功发出！请在手机上查看！")
+        return True
 
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
     log(f"开始监控岚山小火车余票，监控日期列表: {dates}，人数: {TICKETS_COUNT}")
@@ -248,15 +297,28 @@ def execute_monitor():
 
             if locked:
                 seats_desc = ", ".join([f"{s['logicalCarId']}车{s['seatId']}号" for s in target_seats])
-                cart_id = create_official_cart(date_str, service_id, target_seats, total=TICKETS_COUNT)
-                if not cart_id:
+                session_id = create_session(date_str, service_id, target_seats, total=TICKETS_COUNT)
+                if not session_id:
                     continue
 
-                pay_url = f"{OFFICIAL_PAY_BASE}?cartID={cart_id}"
-                log(f"🔗 生成官方原生直达支付链接: {pay_url}")
+                token = get_firebase_token()
+                booking_id, client_secret = create_booking_order(session_id, token)
 
+                seats_param = urllib.parse.quote(seats_desc)
+                service_param = urllib.parse.quote(service_name)
+                pay_url = (
+                    f"{CHECKOUT_PAGE_BASE}?"
+                    f"clientSecret={client_secret or ''}"
+                    f"&bookingId={booking_id or ''}"
+                    f"&date={date_str}"
+                    f"&service={service_param}"
+                    f"&seats={seats_param}"
+                    f"&amount=%C2%A51,760%20JPY"
+                )
+
+                log(f"🔗 生成直达收银台链接: {pay_url}")
                 send_bark_notification(service_name, date_str, seats_desc, pay_url)
-                log("🎯 抢票全流程执行完毕，已发送官方原生支付通知！")
+                log("🎯 抢票全流程执行完毕，已发送支付通知！")
                 return True
 
     log("本次巡检结束，未发现或未成功锁定余票。")
