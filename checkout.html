@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>嵯峨野观光铁道 - 车票支付收银台</title>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card-bg: rgba(22, 30, 46, 0.85);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --accent: #e11d48;
+      --accent-hover: #be123c;
+      --gold: #f59e0b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      background: radial-gradient(circle at top, #1e293b 0%, #0b1120 100%);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 20px 16px;
+    }
+    .container {
+      width: 100%;
+      max-width: 480px;
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 24px 20px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 16px;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(225, 29, 72, 0.15);
+      color: #fb7185;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      margin-bottom: 8px;
+      letter-spacing: 0.5px;
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .countdown-bar {
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .countdown-label {
+      font-size: 13px;
+      color: #fbbf24;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .countdown-time {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fbbf24;
+      font-variant-numeric: tabular-nums;
+    }
+    .ticket-info {
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+    }
+    .info-label {
+      color: var(--text-muted);
+    }
+    .info-val {
+      font-weight: 600;
+      text-align: right;
+    }
+    .highlight-seat {
+      color: #38bdf8;
+      font-weight: 700;
+    }
+    .price-row {
+      border-top: 1px dashed rgba(255, 255, 255, 0.12);
+      padding-top: 10px;
+      margin-top: 2px;
+    }
+    .price-total {
+      font-size: 20px;
+      color: var(--gold);
+      font-weight: 800;
+    }
+    .payment-section {
+      margin-top: 10px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-main);
+    }
+    #card-element {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 14px 12px;
+      margin-bottom: 8px;
+      transition: all 0.2s ease;
+    }
+    #card-element.StripeElement--focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+    #card-errors {
+      color: #f87171;
+      font-size: 13px;
+      margin-bottom: 14px;
+      min-height: 18px;
+    }
+    .pay-btn {
+      width: 100%;
+      background: linear-gradient(135deg, var(--accent) 0%, #be123c 100%);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 0;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 8px 20px rgba(225, 29, 72, 0.35);
+      transition: all 0.2s;
+    }
+    .pay-btn:active {
+      transform: scale(0.98);
+      filter: brightness(0.9);
+    }
+    .pay-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .secure-tips {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+    }
+    /* 支付成功展示 */
+    .success-view {
+      display: none;
+      text-align: center;
+      padding: 20px 0;
+    }
+    .success-icon {
+      width: 64px;
+      height: 64px;
+      background: rgba(16, 185, 129, 0.2);
+      color: var(--success);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      margin: 0 auto 16px;
+      border: 2px solid var(--success);
+    }
+    .view-ticket-btn {
+      margin-top: 20px;
+      display: inline-block;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      padding: 12px 24px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div id="checkout-view">
+      <div class="header">
+        <span class="badge">嵯峨野浪漫铁道 官方直付</span>
+        <h1>岚山小火车预订支付</h1>
+      </div>
+
+      <!-- 15分钟锁座倒计时 -->
+      <div class="countdown-bar">
+        <div class="countdown-label">
+          <span>⏳</span>
+          <span>官方锁座倒计时</span>
+        </div>
+        <div class="countdown-time" id="timer">15:00</div>
+      </div>
+
+      <!-- 预订票务详情 -->
+      <div class="ticket-info">
+        <div class="info-row">
+          <span class="info-label">乘车路线</span>
+          <span class="info-val">嵯峨野 ➔ 龟冈 (单程)</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">乘车日期</span>
+          <span class="info-val" id="disp-date">2026-10-31</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">指定班次</span>
+          <span class="info-val" id="disp-service">嵯峨野 01 号</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">锁定座位</span>
+          <span class="info-val highlight-seat" id="disp-seats">04车01号, 04车02号</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">预订乘客</span>
+          <span class="info-val">WANG XIN (2人)</span>
+        </div>
+        <div class="info-row price-row">
+          <span class="info-label">应付总额</span>
+          <span class="price-total" id="disp-amount">¥1,760 JPY</span>
+        </div>
+      </div>
+
+      <!-- Stripe 信用卡输入表单 -->
+      <div class="payment-section">
+        <div class="section-title">
+          <span>💳</span>
+          <span>信用卡快速安全付款 (Visa / Mastercard)</span>
+        </div>
+        <div id="card-element"></div>
+        <div id="card-errors" role="alert"></div>
+
+        <button class="pay-btn" id="submit-btn" onclick="handlePayment()">
+          <span>🔒 安全支付 ¥1,760 JPY</span>
+        </button>
+      </div>
+
+      <div class="secure-tips">
+        <span>🛡️</span>
+        <span>由官方 Stripe 银行级加密结算，扣款主体为岚山小火车</span>
+      </div>
+    </div>
+
+    <!-- 支付成功界面 -->
+    <div class="success-view" id="success-view">
+      <div class="success-icon">✓</div>
+      <h2 style="font-size: 22px; margin-bottom: 8px;">支付成功！出票完成</h2>
+      <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 16px;">
+        电子车票二维码已发往您的邮箱: <b style="color: #fff;">xnan_19@163.com</b>
+      </p>
+      <div class="ticket-info">
+        <div class="info-row">
+          <span class="info-label">订单编号</span>
+          <span class="info-val" id="res-booking-id">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">座位凭证</span>
+          <span class="info-val highlight-seat" id="res-seats">-</span>
+        </div>
+      </div>
+      <a class="view-ticket-btn" id="official-ticket-link" href="#" target="_blank">查看官方订单凭据</a>
+    </div>
+  </div>
+
+  <script>
+    // 解析 URL 参数
+    const params = new URLSearchParams(window.location.search);
+    const clientSecret = params.get('clientSecret') || '';
+    const bookingId = params.get('bookingId') || '';
+    const dateStr = params.get('date') || '2026-10-31';
+    const serviceName = params.get('service') || '嵯峨野 01 号';
+    const seatsStr = params.get('seats') || '04车01号, 04车02号';
+    const totalAmount = params.get('amount') || '¥1,760 JPY';
+
+    document.getElementById('disp-date').textContent = dateStr;
+    document.getElementById('disp-service').textContent = decodeURIComponent(serviceName);
+    document.getElementById('disp-seats').textContent = decodeURIComponent(seatsStr);
+    document.getElementById('disp-amount').textContent = totalAmount;
+
+    // 15分钟倒计时
+    let timeLeft = 15 * 60;
+    const timerElem = document.getElementById('timer');
+    const timerInterval = setInterval(() => {
+      timeLeft--;
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        timerElem.textContent = '已失效';
+        timerElem.style.color = '#ef4444';
+        document.getElementById('submit-btn').disabled = true;
+        document.getElementById('card-errors').textContent = '锁座会话已超过15分钟失效，请在群/后台重新抢票。';
+        return;
+      }
+      const m = Math.floor(timeLeft / 60).toString().padStart(2, '0');
+      const s = (timeLeft % 60).toString().padStart(2, '0');
+      timerElem.textContent = `${m}:${s}`;
+    }, 1000);
+
+    // 初始化 Stripe
+    const stripe = Stripe('pk_live_s8tj0ofaNKsWcJhEKiKfIKkb00nEeRkJNB', { locale: 'zh' });
+    const elements = stripe.elements();
+    const cardElement = elements.create('card', {
+      hidePostalCode: true,
+      style: {
+        base: {
+          color: '#f8fafc',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          fontSmoothing: 'antialiased',
+          fontSize: '16px',
+          '::placeholder': { color: '#64748b' }
+        },
+        invalid: { color: '#f87171', iconColor: '#f87171' }
+      }
+    });
+    cardElement.mount('#card-element');
+
+    cardElement.on('change', (event) => {
+      const displayError = document.getElementById('card-errors');
+      displayError.textContent = event.error ? event.error.message : '';
+    });
+
+    async function handlePayment() {
+      const btn = document.getElementById('submit-btn');
+      const errBox = document.getElementById('card-errors');
+      if (!clientSecret) {
+        errBox.textContent = '错误: 缺少支付凭证密钥 (clientSecret)';
+        return;
+      }
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳ 正在进行银行安全支付...</span>';
+
+      try {
+        const result = await stripe.confirmCardPayment(clientSecret, {
+          payment_method: { card: cardElement }
+        });
+
+        if (result.error) {
+          errBox.textContent = result.error.message || '支付失败，请检查卡号信息';
+          btn.disabled = false;
+          btn.innerHTML = '<span>🔒 安全支付 ¥1,760 JPY</span>';
+        } else if (result.paymentIntent && result.paymentIntent.status === 'succeeded') {
+          // 付款成功！调用后端完成接口
+          if (bookingId) {
+            fetch('https://ars-backend.triplabo.jp/v2/booking/finish', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Origin': 'https://ars-saganokanko.triplabo.jp',
+                'Grpc-Metadata-Supplier': 'saganokanko'
+              },
+              body: JSON.stringify({ bookingId: bookingId })
+            }).catch(() => {});
+          }
+
+          // 切换到成功页
+          document.getElementById('checkout-view').style.display = 'none';
+          document.getElementById('success-view').style.display = 'block';
+          document.getElementById('res-booking-id').textContent = bookingId || result.paymentIntent.id;
+          document.getElementById('res-seats').textContent = decodeURIComponent(seatsStr);
+          document.getElementById('official-ticket-link').href = `https://ars-saganokanko.triplabo.jp/booking/${bookingId}`;
+        }
+      } catch (err) {
+        errBox.textContent = '网络通信异常: ' + err.message;
+        btn.disabled = false;
+        btn.innerHTML = '<span>🔒 安全支付 ¥1,760 JPY</span>';
+      }
+    }
+  </script>
+</body>
+</html>
