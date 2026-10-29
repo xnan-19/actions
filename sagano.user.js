@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      5.0
-// @description  收到Bark通知点开后，全自动选路线、翻月、选日期、选车次、选人数，直达订单填写与支付页！
+// @version      5.1
+// @description  收到Bark通知点开后，全自动选路线、翻月、选日期、选人数，直达订单填写与支付页！
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
 // @grant        none
@@ -17,7 +17,7 @@
         if (!hud) {
             hud = document.createElement('div');
             hud.id = 'sagano-hud';
-            hud.style.cssText = 'position:fixed;top:40%;left:5%;width:90%;z-index:2147483647;padding:16px 20px;font-size:16px;font-weight:bold;text-align:center;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.5);pointer-events:none;transition:all 0.3s ease;';
+            hud.style.cssText = 'position:fixed;top:38%;left:5%;width:90%;z-index:2147483647;padding:16px 20px;font-size:16px;font-weight:bold;text-align:center;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.5);pointer-events:none;transition:all 0.3s ease;';
             (document.body || document.documentElement).appendChild(hud);
         }
         hud.style.background = bgColor || 'rgba(0, 122, 255, 0.95)';
@@ -53,11 +53,11 @@
 
         let routeDone = false;
         let dateDone = false;
-        let unitDone = false;
+        let unitCount = 0;
         let submitDone = false;
 
         const mainTimer = setInterval(() => {
-            // ① 自动翻到 11 月
+            // ① 自动翻到目标月份（如 11 月）
             const monthHeader = document.querySelector('[class*="dateTableCurrent"], [class*="month"], [class*="dateTableHead"] p');
             if (monthHeader) {
                 const curMonth = (monthHeader.innerText || monthHeader.textContent || '');
@@ -72,7 +72,7 @@
                         }
                     }
                 } else if (!dateDone) {
-                    // 已是 11 月，查找并点击目标日期（如 10 号）
+                    // 已是目标月份，查找并点击目标日期（如 10 号）
                     const dayButtons = document.querySelectorAll('button[class*="dateTableDayButton"], [class*="dateTableBodyCell"] button, [class*="day"] button');
                     for (const btn of dayButtons) {
                         if (btn.hasAttribute('disabled') || btn.disabled) continue;
@@ -85,61 +85,71 @@
                         }
                     }
                 }
-            }
-
-            // ② 自动选择路线：精确点击「嵯峨駅／嵐山駅 → 亀岡駅」按钮
-            if (dateDone && !routeDone) {
-                const candidates = document.querySelectorAll('#selectPlan button, #selectPlan [class*="PlanPicker"], [id="selectPlan"] *');
-                for (const el of candidates) {
-                    const txt = (el.innerText || el.textContent || '').trim();
-                    if (txt.includes('嵯峨駅') && txt.includes('亀岡駅') && txt.startsWith('嵯峨')) {
-                        const targetBtn = el.closest('button') || el;
-                        targetBtn.click();
-                        targetBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        
-                        const radio = targetBtn.querySelector('input[type="radio"]');
-                        if (radio) {
-                            radio.checked = true;
-                            radio.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                        routeDone = true;
-                        showHUD('✔ 路线已自动选中：嵯峨/岚山 ➔ 龟冈', 'rgba(40, 167, 69, 0.95)');
+            } else if (!dateDone) {
+                // 兜底日期查找
+                const dayButtons = document.querySelectorAll('button, div');
+                for (const btn of dayButtons) {
+                    if ((btn.innerText || '').trim() === targetDay && btn.className.includes('day')) {
+                        btn.click();
+                        dateDone = true;
                         break;
                     }
                 }
             }
 
-            // ③ 自动设定人数为 2 人
-            if (dateDone) {
-                const plusBtns = document.querySelectorAll('button[class*="plus"], [class*="plus"], [class*="InputNumber"] button:last-child');
-                const inputs = document.querySelectorAll('input[type="number"], [class*="InputNumber"] input');
-                let cur = 0;
-                if (inputs.length > 0) {
-                    cur = parseInt(inputs[0].value || '0', 10);
+            // ② 自动选择路线：精确匹配「嵯峨駅／嵐山駅 → 亀岡駅」卡片
+            if (!routeDone) {
+                const allDivs = Array.from(document.querySelectorAll('div, button, li, a'));
+                const routeEl = allDivs.find(el => {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    return (t.includes('嵯峨駅／嵐山駅') || (t.includes('嵯峨') && t.includes('亀'))) &&
+                           t.includes('→') &&
+                           t.startsWith('嵯峨') &&
+                           el.children.length <= 4;
+                });
+
+                if (routeEl) {
+                    routeEl.click();
+                    routeEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    routeDone = true;
+                    showHUD('✔ 路线已自动选中：嵯峨/岚山 ➔ 龟冈', 'rgba(40, 167, 69, 0.95)');
                 }
-                if (cur < targetUnits && plusBtns.length > 0) {
+            }
+
+            // ③ 自动设定人数（将大人数量点击增加至目标人数）
+            if (routeDone && unitCount < targetUnits) {
+                // 查找包含 plus / 加号的按钮
+                const plusBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                    const txt = (b.innerText || b.textContent || '').trim();
+                    const cls = (b.className || '').toLowerCase();
+                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                    return cls.includes('plus') || aria.includes('plus') || txt === '+' || b.querySelector('svg');
+                });
+
+                if (plusBtns.length > 0) {
                     plusBtns[0].click();
-                } else if (cur >= targetUnits) {
-                    unitDone = true;
+                    unitCount++;
+                    showHUD(`👥 已自动设定人数: ${unitCount}/${targetUnits} 人`, 'rgba(40, 167, 69, 0.95)');
                 }
             }
 
             // ④ 自动点击「予約手続きへ」进入车次/选座流程
             if (!submitDone) {
-                const allBtns = document.querySelectorAll('button');
-                for (const b of allBtns) {
-                    const bTxt = (b.innerText || b.textContent || '').trim();
-                    if ((bTxt.includes('予約手続き') || bTxt.includes('予約へ進む') || bTxt.includes('Checkout')) && !b.disabled && !b.hasAttribute('disabled')) {
-                        submitDone = true;
-                        showHUD('🎉 正在极速冲刺进入车次与订单页...', 'rgba(40, 167, 69, 0.95)');
-                        b.click();
-                        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        clearInterval(mainTimer);
-                        break;
-                    }
+                const allBtns = Array.from(document.querySelectorAll('button, a'));
+                const submitBtn = allBtns.find(b => {
+                    const txt = (b.innerText || b.textContent || '').trim();
+                    return (txt.includes('予約手続き') || txt.includes('予約へ進む') || txt.includes('Checkout')) && !b.disabled && !b.hasAttribute('disabled');
+                });
+
+                if (submitBtn) {
+                    submitDone = true;
+                    showHUD('🎉 正在极速冲刺进入车次与订单页...', 'rgba(40, 167, 69, 0.95)');
+                    submitBtn.click();
+                    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    clearInterval(mainTimer);
                 }
             }
-        }, 100);
+        }, 120);
 
         setTimeout(() => clearInterval(mainTimer), 30000);
     }
