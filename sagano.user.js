@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      10.0
-// @description  收到Bark通知点开后，全自动精准点选路线、设定2人、真机DOM精准秒选车站、精准锁定2个座位(严格2/2超额自动反选纠错)，直达订单支付页！
+// @version      11.0
+// @description  收到Bark通知点开后，全自动精准点选路线、设定人数、精准展开指定车厢锁定目标座位(支持多车厢与排号座位号匹配)，自适应人数终结震荡，直达订单支付页！
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
-// @grant        none
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @run-at       document-end
 // ==/UserScript==
 
@@ -93,12 +94,50 @@
         }
     }
 
+    // 解析目标座位参数（例如: "4-9-B-3,4-8-B-3" 或 "4-01-A,6-02-B"）
+    function parseTargetSeats(seatsParam) {
+        if (!seatsParam) return [];
+        return seatsParam.split(',').map(item => {
+            const parts = item.trim().split(/[-_]/);
+            if (parts.length >= 3) {
+                return {
+                    car: parseInt(parts[0], 10),         // 车厢号 (如 4)
+                    group: parseInt(parts[1], 10),       // 排号 (如 1 或 9)
+                    seat: parts[2].trim().toUpperCase(), // 座位字母 (如 'A', 'B')
+                    raw: item.trim()
+                };
+            }
+            return null;
+        }).filter(Boolean);
+    }
+
     const url = new URL(window.location.href);
     const params = url.searchParams;
 
-    const targetDate = params.get('date') || sessionStorage.getItem('sagano_target_date') || '2026-11-10';
-    const targetService = params.get('serviceId') || sessionStorage.getItem('sagano_service_id') || '';
-    const targetUnits = parseInt(params.get('unitsCount') || '2', 10);
+    // 参数读取（多源融合：URL Query ➔ GM_getValue ➔ sessionStorage）
+    const targetDate = params.get('date') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_date') : null) || sessionStorage.getItem('sagano_date') || '2026-11-10';
+    const targetService = params.get('serviceId') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_service') : null) || sessionStorage.getItem('sagano_service') || '';
+    const seatsParam = params.get('seats') || (typeof GM_getValue !== 'undefined' ? GM_getValue('sagano_seats') : null) || sessionStorage.getItem('sagano_seats') || '';
+    const parsedTargetSeats = parseTargetSeats(seatsParam);
+    const targetUnits = parseInt(params.get('unitsCount') || (parsedTargetSeats.length > 0 ? parsedTargetSeats.length : '2'), 10);
+
+    // 持久化存储参数以备跨域或页面跳转传递
+    if (params.get('date')) {
+        try { sessionStorage.setItem('sagano_date', params.get('date')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_date', params.get('date'));
+    }
+    if (params.get('serviceId')) {
+        try { sessionStorage.setItem('sagano_service', params.get('serviceId')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_service', params.get('serviceId'));
+    }
+    if (params.get('seats')) {
+        try { sessionStorage.setItem('sagano_seats', params.get('seats')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_seats', params.get('seats'));
+    }
+    if (params.get('unitsCount')) {
+        try { sessionStorage.setItem('sagano_units', params.get('unitsCount')); } catch(e){}
+        if (typeof GM_setValue !== 'undefined') GM_setValue('sagano_units', params.get('unitsCount'));
+    }
 
     // =============================================================
     // 阶段 1: 活动详情页 (自动选路线、翻月、选日期、选人数、进入预约)
@@ -210,14 +249,15 @@
     }
 
     // =============================================================
-    // 阶段 2: Linktivity 车次与选座系统 (v10.0 真实 DOM 精准匹配引擎)
+    // 阶段 2: Linktivity 车次与选座系统 (v11.0 精准目标车厢与座位 + 防震荡自愈引擎)
     // =============================================================
     if (window.location.hostname.includes('linktivity.io')) {
         showHUD('⚡ [1/4] 已进入选座系统，正在锁定车站...', 'rgba(0, 122, 255, 0.95)');
 
         let trainSelected = false;
-        let lastSeatClickTime = 0;
+        let lastSeatActionTime = 0;
         let lastStationClickTime = 0;
+        let isSeatCompleted = false; // 选座完成强锁标帜：一旦满额立即封锁一切选座和反选，狂点提交
         let confirmSubmitted = false;
 
         const linktivityTimer = setInterval(() => {
@@ -226,7 +266,6 @@
             // =========================================================
             // ① 阶段 2.1：选车站 (根据真实 DOM 标签匹配 Combobox 与 Popper 选项)
             // =========================================================
-            // 真实 DOM: <p class="_label_xcgtf_11">乗車駅</p> 后紧跟 <div role="combobox" class="_ref_151dk_1">
             let fromCombobox = null;
             let toCombobox = null;
 
@@ -240,7 +279,6 @@
                 }
             }
 
-            // 备用选择器：若未通过 label 匹配到，按顺位匹配
             if (!fromCombobox || !toCombobox) {
                 const boxes = Array.from(document.querySelectorAll('div[role="combobox"][class*="_ref_"], div[role="combobox"]'));
                 if (boxes.length >= 2) {
@@ -250,7 +288,6 @@
             }
 
             if (fromCombobox && toCombobox) {
-                // 判断是否已经选定车站（根据内部是否有 placeholder）
                 const fromPlaceholder = fromCombobox.querySelector('[class*="_placeholder_"]');
                 const toPlaceholder = toCombobox.querySelector('[class*="_placeholder_"]');
 
@@ -259,7 +296,6 @@
 
                 // 1. 如果乗車駅未选定
                 if (!fromDone) {
-                    // 检查浮层是否已弹出 (div[role="dialog"][class*="_popper_"])
                     const popper = document.querySelector('div[role="dialog"][class*="_popper_"], div[class*="_popper_"]');
                     if (popper) {
                         const sagaBtn = popper.querySelector('button[title="トロッコ嵯峨"]') ||
@@ -272,7 +308,6 @@
                         }
                     }
 
-                    // 如果未展开浮层，点击乗車駅 combobox 展开 (带 500ms 防抖)
                     if (now - lastStationClickTime > 500) {
                         simulatePointerClick(fromCombobox);
                         lastStationClickTime = now;
@@ -285,7 +320,6 @@
                 if (fromDone && !toDone) {
                     const popper = document.querySelector('div[role="dialog"][class*="_popper_"], div[class*="_popper_"]');
                     if (popper) {
-                        // 在降车站浮层中，トロッコ亀岡 会变成非 disabled 状态
                         const kameokaBtn = popper.querySelector('button[title="トロッコ亀岡"]:not([disabled])') ||
                                            Array.from(popper.querySelectorAll('button:not([disabled]), div[role="option"]')).find(el => (el.innerText || '').includes('トロッコ亀岡'));
                         if (kameokaBtn) {
@@ -296,7 +330,6 @@
                         }
                     }
 
-                    // 如果未展开降车站浮层，点击降車站 combobox 展开
                     if (now - lastStationClickTime > 500) {
                         simulatePointerClick(toCombobox);
                         lastStationClickTime = now;
@@ -336,7 +369,6 @@
                     const trainText = (targetTrain.innerText || '').split('\n')[0].trim();
                     showHUD(`✔ [2/4] 已自动选定车次：${trainText}，正在进入选座...`, 'rgba(40, 167, 69, 0.95)');
 
-                    // 点击底部的「次へ」按钮
                     const nextBtn = document.querySelector('div[class*="_footer_"] button[class*="_filled_"], button._filled_4p3z7_30');
                     if (nextBtn && !nextBtn.disabled) {
                         simulatePointerClick(nextBtn);
@@ -347,22 +379,14 @@
             }
 
             // =========================================================
-            // ③ 阶段 2.3：选座页面 (真实 DOM 严密对齐：严格 2/2，超选自动反选纠错)
+            // ③ 阶段 2.3：选座页面 (精准展开指定车厢锁定目标座位 + 彻底终结震荡)
             // =========================================================
-            const carriageBtn = document.querySelector('button[class*="_carriageContainer_"], button._carriageContainer_h139u_1');
+            // 获取所有车厢项容器
+            const carriageItems = Array.from(document.querySelectorAll('div[class*="_carriageContent_"], div[class*="_carriage_"]'));
+            const countEl = document.querySelector('p[class*="_count_"], p._count_h139u_58');
 
-            if (carriageBtn) {
-                // 1. 检查 1 号车厢是否已展开 (根据真实 DOM 中的 _activeArrow_ 类名)
-                const isCarriageActive = !!document.querySelector('svg[class*="_activeArrow_"], ._activeArrow_h139u_20');
-
-                if (!isCarriageActive) {
-                    simulatePointerClick(carriageBtn);
-                    showHUD('✔ [3/4] 正在展开 1 号车厢座位图...', 'rgba(0, 122, 255, 0.95)');
-                    return;
-                }
-
-                // 2. 读取页面底部的权威真实人数计数器 (例如: "2/2", "4/2")
-                const countEl = document.querySelector('p[class*="_count_"], p._count_h139u_58');
+            if (carriageItems.length > 0 || countEl) {
+                // 1. 读取页面底部的权威真实选座计数（例如: "3/4", "4/4", "6/4", "2/2"）
                 let curSelected = 0;
                 let maxAllowed = targetUnits;
 
@@ -370,23 +394,22 @@
                     const m = (countEl.innerText || '').match(/(\d+)\s*\/\s*(\d+)/);
                     if (m) {
                         curSelected = parseInt(m[1], 10);
-                        maxAllowed = parseInt(m[2], 10);
+                        maxAllowed = parseInt(m[2], 10); // 自适应当前页面设定的总人数（如 4 或 2）
                     }
                 }
 
-                // 真实 DOM 提取：已选中的座位元素
                 const selectedSeats = Array.from(document.querySelectorAll('button[class*="_selected_1t8uk_"], button[class*="_selected_"]'));
-                // 兜底：若 countEl 未读取到数字，以 selectedSeats.length 为准
                 if (!countEl) curSelected = selectedSeats.length;
 
-                // ---------------------------------------------------------
-                // 状态 A：正好选满目标人数 (2/2) ➔ 立即直达！
-                // ---------------------------------------------------------
-                if (curSelected === maxAllowed) {
-                    showHUD(`🎉 成功锁定 ${curSelected}/${maxAllowed} 个座位！正在提交直达...`, 'rgba(40, 167, 69, 0.95)');
+                const nextBtn = document.querySelector('div[class*="_footer_"] button[class*="_filled_"], button._filled_4p3z7_30');
 
-                    // 点击底部的「次へ」按钮进入确认页
-                    const nextBtn = document.querySelector('div[class*="_footer_"] button[class*="_filled_"], button._filled_4p3z7_30');
+                // ---------------------------------------------------------
+                // 状态 A：【满额锁死直达】（正好选满如 4/4 或 2/2）
+                // ---------------------------------------------------------
+                if (curSelected === maxAllowed || isSeatCompleted) {
+                    isSeatCompleted = true; // 永久强锁，绝不再执行选座或反选！
+                    showHUD(`🎉 成功锁定 ${curSelected}/${maxAllowed} 个座位！正在提交直达订单页...`, 'rgba(40, 167, 69, 0.95)');
+
                     if (nextBtn && !nextBtn.disabled) {
                         simulatePointerClick(nextBtn);
                     }
@@ -394,33 +417,115 @@
                 }
 
                 // ---------------------------------------------------------
-                // 状态 B：发生超选 (如 4/2，3/2) ➔ 立即执行自动反选纠错！
+                // 状态 B：【超额安全回退】（当前分子 > 分母，如 6/4）
                 // ---------------------------------------------------------
                 if (curSelected > maxAllowed) {
-                    if (now - lastSeatClickTime > 500 && selectedSeats.length > 0) {
-                        // 取最后一个已选座位进行反选取消
-                        const excessSeat = selectedSeats[selectedSeats.length - 1];
-                        simulatePointerClick(excessSeat);
-                        lastSeatClickTime = now;
+                    // 严格 800ms 防抖冷却，防止高频误伤和震荡
+                    if (now - lastSeatActionTime > 800 && selectedSeats.length > 0) {
+                        // 优先反选未在目标列表中指定的座位
+                        let seatToUnselect = selectedSeats[selectedSeats.length - 1];
+                        if (parsedTargetSeats.length > 0) {
+                            const nonTargetSeat = selectedSeats.find(s => {
+                                const sText = (s.innerText || '').trim();
+                                const groupDiv = s.closest('div[class*="_group_"]');
+                                const gText = groupDiv ? (groupDiv.querySelector('span[class*="_groupId_"]')?.innerText || '').trim() : '';
+                                return !parsedTargetSeats.some(t => String(t.group) === gText && t.seat === sText);
+                            });
+                            if (nonTargetSeat) seatToUnselect = nonTargetSeat;
+                        }
+
+                        simulatePointerClick(seatToUnselect);
+                        lastSeatActionTime = now;
                         showHUD(`⚠️ 座位超额 (${curSelected}/${maxAllowed})，正在自动反选回退...`, 'rgba(255, 149, 0, 0.95)');
                     }
                     return;
                 }
 
                 // ---------------------------------------------------------
-                // 状态 C：座位未选满 (如 0/2, 1/2) ➔ 严格防抖单次选座，绝不过冲！
+                // 状态 C：【未满额选座】（当前分子 < 分母，如 3/4 或 0/2）
                 // ---------------------------------------------------------
-                if (curSelected < maxAllowed) {
-                    // 可选的空位：带有 _seatInner_ 且没有 disabled 属性、没有 _disabled_ 类名、没有 _selected_ 类名
-                    const availableSeats = Array.from(document.querySelectorAll('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])'));
+                if (curSelected < maxAllowed && now - lastSeatActionTime > 800) {
+                    // ① 优先查找并点击链接中指定的目标座位 (如 04车 01号 A/B座)
+                    if (parsedTargetSeats.length > 0) {
+                        for (const target of parsedTargetSeats) {
+                            // 查找对应的车厢容器 (例如 4号车)
+                            const carItem = carriageItems.find(item => {
+                                const label = item.querySelector('button[class*="_carriageContainer_"], p');
+                                const t = label ? (label.innerText || '').trim() : '';
+                                return t.includes(`${target.car}号車`) || t.includes(`${target.car}号`);
+                            });
 
-                    if (availableSeats.length > 0 && now - lastSeatClickTime > 600) {
-                        const seatToClick = availableSeats[0];
-                        simulatePointerClick(seatToClick);
-                        lastSeatClickTime = now;
-                        showHUD(`💺 正在锁定座位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                            if (carItem) {
+                                const carBtn = carItem.querySelector('button[class*="_carriageContainer_"]');
+                                const isCarExpanded = !!carItem.querySelector('svg[class*="_activeArrow_"], div[class*="_car_"]');
+
+                                // 如果目标车厢未展开，先展开该车厢
+                                if (!isCarExpanded && carBtn) {
+                                    simulatePointerClick(carBtn);
+                                    lastSeatActionTime = now;
+                                    showHUD(`🔍 正在精准展开 ${target.car} 号车厢...`, 'rgba(0, 122, 255, 0.95)');
+                                    return;
+                                }
+
+                                // 目标车厢已展开，定位目标排号与座位字母
+                                if (isCarExpanded) {
+                                    const groupSpans = Array.from(carItem.querySelectorAll('span[class*="_groupId_"]'));
+                                    const matchedGroupSpan = groupSpans.find(sp => {
+                                        const gNum = parseInt((sp.innerText || '').trim(), 10);
+                                        return gNum === target.group;
+                                    });
+
+                                    if (matchedGroupSpan) {
+                                        const groupDiv = matchedGroupSpan.closest('div[class*="_group_"]');
+                                        if (groupDiv) {
+                                            const seatBtns = Array.from(groupDiv.querySelectorAll('button[class*="_seatInner_"]'));
+                                            const matchedSeatBtn = seatBtns.find(b => {
+                                                const sLetter = (b.querySelector('span')?.innerText || b.innerText || '').trim().toUpperCase();
+                                                return sLetter === target.seat;
+                                            });
+
+                                            if (matchedSeatBtn) {
+                                                // 检查该目标座位是否已被选中
+                                                const isAlreadySelected = matchedSeatBtn.className.includes('_selected_');
+                                                if (!isAlreadySelected && !matchedSeatBtn.disabled && !matchedSeatBtn.className.includes('_disabled_')) {
+                                                    simulatePointerClick(matchedSeatBtn);
+                                                    lastSeatActionTime = now;
+                                                    showHUD(`🎯 已成功命中指定座位：${target.car}号车${target.group}${target.seat}！`, 'rgba(40, 167, 69, 0.95)');
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    return;
+
+                    // ② 若目标座位全部已被选或未指定目标座位，采用可用空位兜底填充
+                    const expandedCar = carriageItems.find(item => !!item.querySelector('svg[class*="_activeArrow_"], div[class*="_car_"]'));
+                    if (expandedCar) {
+                        const availableSeats = Array.from(expandedCar.querySelectorAll('button[class*="_seatInner_"]:not([disabled]):not([class*="_disabled_"]):not([class*="_selected_"])'));
+                        if (availableSeats.length > 0) {
+                            simulatePointerClick(availableSeats[0]);
+                            lastSeatActionTime = now;
+                            showHUD(`💺 正在锁定座位 (${curSelected + 1}/${maxAllowed})...`, 'rgba(40, 167, 69, 0.95)');
+                            return;
+                        }
+                    }
+
+                    // ③ 当前展开车厢无可用空位，展开下一个车厢寻找
+                    for (const item of carriageItems) {
+                        const isCarExpanded = !!item.querySelector('svg[class*="_activeArrow_"], div[class*="_car_"]');
+                        if (!isCarExpanded) {
+                            const carBtn = item.querySelector('button[class*="_carriageContainer_"]');
+                            if (carBtn) {
+                                simulatePointerClick(carBtn);
+                                lastSeatActionTime = now;
+                                showHUD('🔍 正在探索下一节车厢可用座位...', 'rgba(255, 149, 0, 0.95)');
+                                return;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -448,4 +553,5 @@
         showHUD('🎉 恭喜！已全自动直达订单支付页！请核对并支付！', 'rgba(40, 167, 69, 0.95)');
     }
 })();
+
 
