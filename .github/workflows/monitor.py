@@ -308,14 +308,15 @@ def find_best_even_seats(date_str, service_id, target_count=2):
     return None, ""
 
 
-def send_bark_notification(service_name, date_str, seats_desc, pay_url):
+def send_bark_notification(service_name, dep_time, date_str, seats_desc, pay_url):
     if not BARK_KEY:
         log("未配置 BARK_KEY，跳过 Bark 推送")
         return
 
-    title = urllib.parse.quote("🎉 岚山小火车余票强提醒！(偶数座优先)")
+    time_str = f" ({dep_time} 发车)" if dep_time else ""
+    title = urllib.parse.quote(f"🎉 岚山小火车抢票提醒！{service_name}{time_str}")
     body_text = (
-        f"车次: {service_name}\n"
+        f"车次: {service_name}{time_str}\n"
         f"日期: {date_str}\n"
         f"席位: {seats_desc}\n"
         f"乘车人: WANG XIN (2人同行)\n"
@@ -351,6 +352,8 @@ def execute_monitor():
             f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
             f"?date={test_date}"
             f"&serviceId={test_service}"
+            f"&train={urllib.parse.quote('嵯峨野01号')}"
+            f"&time=09:02"
             f"&seats={test_seats_param}"
             f"&unitsCount={TICKETS_COUNT}"
             f"&auto=1"
@@ -359,7 +362,7 @@ def execute_monitor():
             title = urllib.parse.quote("🔔 岚山小火车抢票机器人·连通性测试")
             body_text = (
                 f"【⚠️ 这是通知连通性测试，非实时退票】\n"
-                f"测试车次: 嵯峨野 01 号\n"
+                f"测试车次: 嵯峨野 01 号 (09:02 发车)\n"
                 f"目标日期: {test_date}\n"
                 f"测试席位: 4号车 4C+4D\n"
                 f"真实监控正在后台 24 小时每 15 分钟扫描！一旦有人退票，将按照【偶数连座 > 偶数前后座 > 偶数分开】智能锁定并推送！"
@@ -421,6 +424,7 @@ def execute_monitor():
         for srv in available_services:
             service_id = srv["serviceId"]
             service_name = srv["name"]
+            dep_time = srv.get("depTime", "")
 
             best_pair, best_desc = find_best_even_seats(date_str, service_id, target_count=TICKETS_COUNT)
             if not best_pair:
@@ -430,19 +434,25 @@ def execute_monitor():
             s1, s2 = best_pair
             seats_param = urllib.parse.quote(f"{s1['carId']}-{s1['group']}-{s1['seat']},{s2['carId']}-{s2['group']}-{s2['seat']}")
             seats_display = best_desc
-            log(f"🔥【真实现票】{service_name} 成功匹配到优质席位: {seats_display}！")
+            time_display = f" ({dep_time} 发车)" if dep_time else ""
+            log(f"🔥【真实现票】{service_name}{time_display} 成功匹配到优质席位: {seats_display}！")
+
+            train_param = urllib.parse.quote(service_name)
+            time_param = urllib.parse.quote(dep_time)
 
             pay_url = (
                 f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
                 f"?date={date_str}"
                 f"&serviceId={service_id}"
+                f"&train={train_param}"
+                f"&time={time_param}"
                 f"&seats={seats_param}"
                 f"&unitsCount={TICKETS_COUNT}"
                 f"&auto=1"
             )
 
             log(f"🔗 生成官方自动化直达链接: {pay_url}")
-            send_bark_notification(service_name, date_str, seats_display, pay_url)
+            send_bark_notification(service_name, dep_time, date_str, seats_display, pay_url)
             log("🎯 发现可用真实退票，已全自动发送强提醒通知！")
             return True
 
