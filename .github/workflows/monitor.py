@@ -211,14 +211,14 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
         log("未配置 BARK_KEY，跳过 Bark 推送")
         return
 
-    title = urllib.parse.quote("🎉 岚山小火车抢票成功！请在15分钟内付款")
+    title = urllib.parse.quote("🎉 岚山小火车抢票锁座成功！(保留15分钟)")
     body_text = (
         f"车次: {service_name}\n"
         f"日期: {date_str}\n"
         f"座位: {seats_desc}\n"
-        f"预订人: WANG XIN (2人)\n"
-        f"应付: ¥1,760 JPY\n"
-        f"点击本通知秒开专属收银台输入 Visa 付款出票！"
+        f"预订人: WANG XIN (2人同行)\n"
+        f"金额: ¥1,760 JPY\n"
+        f"点击通知直达【岚山小火车官方网站】输入 Visa 信用卡支付出票！"
     )
     body = urllib.parse.quote(body_text)
 
@@ -241,21 +241,33 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
 def execute_monitor():
     # 测试推送模式
     if os.getenv("TEST_BARK", "").lower() in ["true", "1"]:
-        log("📢 触发 Bark 专属极速收银台测试推送...")
+        log("📢 触发 Bark 官方支付直达测试推送...")
         test_service = "嵯峨野 01 号 (官方车次)"
         test_date = "2026-10-31"
         test_seats = "04车01号, 04车02号"
-        pay_url = (
-            f"{CHECKOUT_PAGE_BASE}?"
-            f"clientSecret=pi_demo_test_secret"
-            f"&bookingId=BKG_DEMO_123456"
-            f"&date={test_date}"
-            f"&service={urllib.parse.quote(test_service)}"
-            f"&seats={urllib.parse.quote(test_seats)}"
-            f"&amount=%C2%A51,760%20JPY"
-        )
+        test_order_data = {
+            "sessionId": "sess_test_sagano_12345",
+            "session": {
+                "activityId": PRODUCT_ID,
+                "languageCode": "ja",
+                "planId": "SAGANO-YRBTL-1",
+                "targetDate": test_date,
+                "planStartTime": "10:02",
+                "planUnitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}],
+                "participantFirstName": PASSENGER_INFO["firstName"],
+                "participantLastName": PASSENGER_INFO["lastName"],
+                "participantEmailAddress": PASSENGER_INFO["email"],
+                "destinationEmail": PASSENGER_INFO["email"],
+                "participantResidentRegion": PASSENGER_INFO["country"],
+                "currencyCode": "JPY",
+                "bookingNotes": "fromStationId=1&toStationId=2&serviceId=SAGANO_01&seats=04-1-01-ORDINARY,04-1-02-ORDINARY"
+            },
+            "unitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}]
+        }
+        encoded_order = urllib.parse.quote(json.dumps(test_order_data, ensure_ascii=False))
+        pay_url = f"https://ars-saganokanko.triplabo.jp/booking/pay#order={encoded_order}"
         send_bark_notification(test_service, test_date, test_seats, pay_url)
-        log("✅ 专属收银台测试推送已成功发出！请在手机上查看！")
+        log("✅ 官方直达测试推送已成功发出！请在手机上查看！")
         return True
 
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
@@ -301,22 +313,29 @@ def execute_monitor():
                 if not session_id:
                     continue
 
-                token = get_firebase_token()
-                booking_id, client_secret = create_booking_order(session_id, token)
+                order_data = {
+                    "sessionId": session_id,
+                    "session": {
+                        "activityId": PRODUCT_ID,
+                        "languageCode": "ja",
+                        "planId": "SAGANO-YRBTL-1",
+                        "targetDate": date_str,
+                        "planStartTime": srv.get("startTime", "10:02"),
+                        "planUnitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}],
+                        "participantFirstName": PASSENGER_INFO["firstName"],
+                        "participantLastName": PASSENGER_INFO["lastName"],
+                        "participantEmailAddress": PASSENGER_INFO["email"],
+                        "destinationEmail": PASSENGER_INFO["email"],
+                        "participantResidentRegion": PASSENGER_INFO["country"],
+                        "currencyCode": "JPY",
+                        "bookingNotes": f"fromStationId=1&toStationId=2&serviceId={service_id}&seats=" + ",".join([f"{s['logicalCarId']}-{s['seatGroupId']}-{s['seatId']}-{s['arrangementTypeId']}" for s in target_seats])
+                    },
+                    "unitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}]
+                }
+                encoded_order = urllib.parse.quote(json.dumps(order_data, ensure_ascii=False))
+                pay_url = f"https://ars-saganokanko.triplabo.jp/booking/pay#order={encoded_order}"
 
-                seats_param = urllib.parse.quote(seats_desc)
-                service_param = urllib.parse.quote(service_name)
-                pay_url = (
-                    f"{CHECKOUT_PAGE_BASE}?"
-                    f"clientSecret={client_secret or ''}"
-                    f"&bookingId={booking_id or ''}"
-                    f"&date={date_str}"
-                    f"&service={service_param}"
-                    f"&seats={seats_param}"
-                    f"&amount=%C2%A51,760%20JPY"
-                )
-
-                log(f"🔗 生成直达收银台链接: {pay_url}")
+                log(f"🔗 生成官方主站支付链接: {pay_url}")
                 send_bark_notification(service_name, date_str, seats_desc, pay_url)
                 log("🎯 抢票全流程执行完毕，已发送支付通知！")
                 return True
