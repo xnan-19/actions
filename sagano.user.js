@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      7.0
-// @description  收到Bark通知点开后，全自动精准点选路线、设定2人、双轨车站秒选、防反复折叠智能锁定空座，直达订单支付页！
+// @version      8.0
+// @description  收到Bark通知点开后，全自动精准点选路线、设定2人、ReactProps秒选车站、车厢防反复折叠智能锁定2空位，直达订单支付页！
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
 // @grant        none
@@ -146,13 +146,26 @@
     }
 
     // =============================================================
-    // 阶段 2: Linktivity 车次与选座系统 (v7.0 终极双轨自适应引擎)
+    // 阶段 2: Linktivity 车次与选座系统 (v8.0 终极全自动引擎)
     // =============================================================
     if (window.location.hostname.includes('linktivity.io')) {
-        showHUD('🚀 抵达车次与选座系统，正在极速匹配...', 'rgba(0, 122, 255, 0.95)');
+        showHUD('⚡ [1/4] 已进入选座系统，正在锁定车站...', 'rgba(0, 122, 255, 0.95)');
 
-        // 终极事件触发引擎（全方位兼容 iOS Safari 触屏、React 合成事件与原生事件）
-        function smartTrigger(el) {
+        // 工具函数：获取 DOM 对应的 React Props
+        function getReactProps(dom) {
+            if (!dom) return null;
+            const pKey = Object.keys(dom).find(k => k.startsWith('__reactProps$'));
+            if (pKey && dom[pKey]) return dom[pKey];
+            const fKey = Object.keys(dom).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+            if (fKey && dom[fKey]) {
+                const fiber = dom[fKey];
+                return fiber.memoizedProps || fiber.pendingProps || null;
+            }
+            return null;
+        }
+
+        // 工具函数：全能四重事件触发器（穿透 iOS Safari 触屏、React 合成事件与原生行为）
+        function forceTrigger(el) {
             if (!el) return;
 
             // 1. 原生 click 方法
@@ -160,17 +173,23 @@
                 if (typeof el.click === 'function') el.click();
             } catch (e) {}
 
-            // 2. 深度触发 React 内部合成事件 (onClick / onSelect)
+            // 2. 原型链原生调用
             try {
-                const pKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactInternalInstance$'));
-                if (pKey && el[pKey]) {
-                    if (typeof el[pKey].onClick === 'function') el[pKey].onClick({ stopPropagation: () => {}, preventDefault: () => {} });
-                    if (typeof el[pKey].onSelect === 'function') el[pKey].onSelect();
+                if (el instanceof HTMLButtonElement) HTMLButtonElement.prototype.click.call(el);
+                else if (el instanceof HTMLElement) HTMLElement.prototype.click.call(el);
+            } catch (e) {}
+
+            // 3. React 内部 onClick / onSelect 直接执行
+            try {
+                const props = getReactProps(el);
+                if (props) {
+                    if (typeof props.onClick === 'function') props.onClick({ stopPropagation: () => {}, preventDefault: () => {} });
+                    if (typeof props.onSelect === 'function') props.onSelect();
                 }
             } catch (e) {}
 
-            // 3. 完整派发移动端触屏与鼠标事件链
-            ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(evtName => {
+            // 4. 全套 Touch / Pointer / Mouse 真实事件派发
+            ['touchstart', 'touchend', 'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'].forEach(evtName => {
                 try {
                     let evt;
                     if (evtName.startsWith('touch')) {
@@ -191,79 +210,138 @@
             });
         }
 
-        let fromDone = false;
-        let toDone = false;
-        let lastBoxOpenTime = 0;
-        let trainDone = false;
-        let carriageExpandedOnce = false;
-        let lastSeatClickTime = 0;
-        let confirmDone = false;
+        let fromSelected = false;
+        let toSelected = false;
+        let lastBoxOpenAttempt = 0;
+
+        let trainSelected = false;
+
+        // 车厢展开控制：严格单次点击，彻底根绝车厢反复展开收起
+        let carriageOpened = false;
+
+        let lastSeatClickAttempt = 0;
+        let confirmSubmitted = false;
 
         const linktivityTimer = setInterval(() => {
             const now = Date.now();
             const bodyText = document.body ? (document.body.innerText || '') : '';
 
             // =========================================================
-            // ① 阶段 2.1：车站选择（双轨极速机制：见选项即秒选 + 防抖轻触展开）
+            // ① 阶段 2.1：自动选车站（トロッコ嵯峨 ➔ トロッコ亀岡）
             // =========================================================
-            if (!fromDone || !toDone) {
-                // 1. 优先扫描页面上是否已经弹出了车站选项（无论脚本展开还是手动展开）
-                // 寻找包含「トロッコ嵯峨」的选项元素
-                if (!fromDone) {
+            if (!fromSelected || !toSelected) {
+                // 1. 尝试直接通过 React Props 属性秒选车站
+                if (!fromSelected) {
+                    const fromBoxCandidates = Array.from(document.querySelectorAll('div, span, button, input')).filter(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t.includes('乗車駅を選択');
+                    });
+
+                    for (const box of fromBoxCandidates) {
+                        let curr = box;
+                        for (let depth = 0; depth < 5 && curr; depth++) {
+                            const p = getReactProps(curr);
+                            if (p && typeof p.onSelect === 'function' && Array.isArray(p.options)) {
+                                const sagaItem = p.options.find(o => (o.label || '').includes('嵯峨'));
+                                if (sagaItem) {
+                                    p.onSelect(sagaItem.value);
+                                    fromSelected = true;
+                                    showHUD('✔ 乘车站已设定：トロッコ嵯峨', 'rgba(40, 167, 69, 0.95)');
+                                    break;
+                                }
+                            }
+                            curr = curr.parentElement;
+                        }
+                        if (fromSelected) break;
+                    }
+                }
+
+                if (fromSelected && !toSelected) {
+                    const toBoxCandidates = Array.from(document.querySelectorAll('div, span, button, input')).filter(el => {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        return t.includes('降車駅を選択');
+                    });
+
+                    for (const box of toBoxCandidates) {
+                        let curr = box;
+                        for (let depth = 0; depth < 5 && curr; depth++) {
+                            const p = getReactProps(curr);
+                            if (p && typeof p.onSelect === 'function' && Array.isArray(p.options)) {
+                                const kameItem = p.options.find(o => (o.label || '').includes('亀岡'));
+                                if (kameItem) {
+                                    p.onSelect(kameItem.value);
+                                    toSelected = true;
+                                    showHUD('✔ 降车站已设定：トロッコ亀岡，正在加载车次...', 'rgba(40, 167, 69, 0.95)');
+                                    break;
+                                }
+                            }
+                            curr = curr.parentElement;
+                        }
+                        if (toSelected) break;
+                    }
+                }
+
+                // 2. 双保险：DOM 选项秒选机制（如果选项已在页面出现，无论是自动弹出的还是手动点开的）
+                if (!fromSelected) {
                     const sagaOpt = Array.from(document.querySelectorAll('div, li, button, span, p, a')).find(el => {
                         const t = (el.innerText || el.textContent || '').trim();
                         return (t === 'トロッコ嵯峨' || t === '嵯峨') && el.children.length === 0;
                     });
 
                     if (sagaOpt) {
-                        smartTrigger(sagaOpt);
-                        smartTrigger(sagaOpt.parentElement);
-                        fromDone = true;
+                        forceTrigger(sagaOpt);
+                        if (sagaOpt.parentElement) forceTrigger(sagaOpt.parentElement);
+                        fromSelected = true;
                         showHUD('✔ 乘车站已选中：トロッコ嵯峨', 'rgba(40, 167, 69, 0.95)');
                         return;
                     }
                 }
 
-                // 寻找包含「トロッコ亀岡」的选项元素
-                if (fromDone && !toDone) {
+                if (fromSelected && !toSelected) {
                     const kameokaOpt = Array.from(document.querySelectorAll('div, li, button, span, p, a')).find(el => {
                         const t = (el.innerText || el.textContent || '').trim();
                         return (t === 'トロッコ亀岡' || t === '亀岡') && el.children.length === 0;
                     });
 
                     if (kameokaOpt) {
-                        smartTrigger(kameokaOpt);
-                        smartTrigger(kameokaOpt.parentElement);
-                        toDone = true;
+                        forceTrigger(kameokaOpt);
+                        if (kameokaOpt.parentElement) forceTrigger(kameokaOpt.parentElement);
+                        toSelected = true;
                         showHUD('✔ 降车站已选中：トロッコ亀岡，正在查询车次...', 'rgba(40, 167, 69, 0.95)');
                         return;
                     }
                 }
 
-                // 2. 如果选项还没出现，按需展开下拉框（防抖间隔至少 800ms，绝对避免频繁展开关闭闪烁）
-                if (now - lastBoxOpenTime > 800) {
-                    if (!fromDone) {
+                // 3. 如果选项未出现，以 800ms 间隔平缓轻触展开下拉框（防抖防闪烁）
+                if (now - lastBoxOpenAttempt > 800) {
+                    if (!fromSelected) {
                         const fromBox = Array.from(document.querySelectorAll('div, button, input, span')).find(el => {
                             const t = (el.innerText || el.textContent || '').trim();
                             return t.includes('乗車駅を選択');
                         });
                         if (fromBox) {
-                            smartTrigger(fromBox);
-                            smartTrigger(fromBox.parentElement);
-                            lastBoxOpenTime = now;
-                            showHUD('🚉 正在展开乘车站下拉列表...', 'rgba(0, 122, 255, 0.95)');
+                            let curr = fromBox;
+                            for (let i = 0; i < 3 && curr; i++) {
+                                forceTrigger(curr);
+                                curr = curr.parentElement;
+                            }
+                            lastBoxOpenAttempt = now;
+                            showHUD('🚉 正在展开乘车站下拉菜单...', 'rgba(0, 122, 255, 0.95)');
                             return;
                         }
-                    } else if (!toDone) {
+                    } else if (!toSelected) {
                         const toBox = Array.from(document.querySelectorAll('div, button, input, span')).find(el => {
                             const t = (el.innerText || el.textContent || '').trim();
                             return t.includes('降車駅を選択');
                         });
                         if (toBox) {
-                            smartTrigger(toBox);
-                            smartTrigger(toBox.parentElement);
-                            lastBoxOpenTime = now;
-                            showHUD('🏁 正在展开降车站下拉列表...', 'rgba(0, 122, 255, 0.95)');
+                            let curr = toBox;
+                            for (let i = 0; i < 3 && curr; i++) {
+                                forceTrigger(curr);
+                                curr = curr.parentElement;
+                            }
+                            lastBoxOpenAttempt = now;
+                            showHUD('🏁 正在展开降车站下拉菜单...', 'rgba(0, 122, 255, 0.95)');
                             return;
                         }
                     }
@@ -271,9 +349,9 @@
             }
 
             // =========================================================
-            // ② 阶段 2.2：车次选择（自动选中指定车次并点击「次へ」）
+            // ② 阶段 2.2：自动选车次并点击「次へ」
             // =========================================================
-            if (!trainDone) {
+            if (!trainSelected) {
                 const trainBtns = Array.from(document.querySelectorAll('button')).filter(b => {
                     const cls = b.className || '';
                     const t = (b.innerText || b.textContent || '').trim();
@@ -289,81 +367,9 @@
                         if (matched) targetTrain = matched;
                     }
 
-                    smartTrigger(targetTrain);
+                    forceTrigger(targetTrain);
                     const trainText = (targetTrain.innerText || '').split('\n')[0].trim();
-                    showHUD(`✔ 已自动选中车次：${trainText}，正在下一步...`, 'rgba(40, 167, 69, 0.95)');
-
-                    // 点击底部的「次へ」按钮进入选座
-                    const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
-                        const t = (b.innerText || '').trim();
-                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled && !b.hasAttribute('disabled');
-                    });
-
-                    if (nextBtn) {
-                        smartTrigger(nextBtn);
-                        trainDone = true;
-                    }
-                    return;
-                }
-            }
-
-            // =========================================================
-            // ③ 阶段 2.3：车厢与选座页面（防反复折叠 + 字母座位智能抓取）
-            // =========================================================
-            const carriageBtns = Array.from(document.querySelectorAll('button')).filter(b => {
-                const t = (b.innerText || '').trim();
-                const cls = b.className || '';
-                return (t.includes('号車') || t.includes('Car No') || (typeof cls === 'string' && cls.includes('carriageContainer'))) && !t.includes('次へ');
-            });
-
-            if (carriageBtns.length > 0) {
-                // 判断车厢是否已经处于展开状态（页面出现「出入り口」或数字排号）
-                const isCarriageOpen = bodyText.includes('出入り口') || !!document.querySelector('[class*="_carBody_"], [class*="_carInner_"]');
-
-                // 如果未展开且从未点过展开，只点击一次展开（绝对禁止频繁点击）
-                if (!isCarriageOpen && !carriageExpandedOnce) {
-                    smartTrigger(carriageBtns[0]);
-                    carriageExpandedOnce = true;
-                    showHUD('✔ 正在展开 1 号车厢座位图...', 'rgba(0, 122, 255, 0.95)');
-                    return;
-                }
-
-                // 核心：全页面精准提取所有单个字母 A/B/C/D 的可用座位
-                const letterElements = Array.from(document.querySelectorAll('button, span, div')).filter(el => {
-                    const t = (el.innerText || el.textContent || '').trim();
-                    return ['A', 'B', 'C', 'D'].includes(t) && el.children.length === 0;
-                });
-
-                // 区分已选中座位与可用空位
-                const selectedSeats = [];
-                const availableSeats = [];
-
-                for (const el of letterElements) {
-                    const seatContainer = el.closest('button') || el.closest('div[class*="_seat_"]') || el.parentElement || el;
-                    const combinedCls = (seatContainer.className || '') + ' ' + (el.className || '');
-
-                    // 检查是否已选中
-                    if (combinedCls.includes('_selected_') || combinedCls.includes('selected')) {
-                        if (!selectedSeats.includes(seatContainer)) selectedSeats.push(seatContainer);
-                        continue;
-                    }
-
-                    // 检查是否被禁用（已售出的灰色座位）
-                    if (seatContainer.disabled || seatContainer.hasAttribute('disabled')) continue;
-                    if (combinedCls.includes('_disabled_') || combinedCls.includes('disabled')) continue;
-
-                    if (!availableSeats.includes(seatContainer)) {
-                        availableSeats.push(seatContainer);
-                    }
-                }
-
-                // 读取页面底部的数量计数（如 "2/2"）
-                const countEl = document.querySelector('[class*="_count_"], [class*="count"]');
-                const countText = countEl ? (countEl.innerText || '').trim() : '';
-
-                // 判断是否选满 2 人（例如已选 2 人，或底部显示 2/2）
-                if (selectedSeats.length >= targetUnits || (countText && countText.startsWith(`${targetUnits}/`))) {
-                    showHUD(`🎉 成功锁定 ${targetUnits} 个座位！正在进入确认页...`, 'rgba(40, 167, 69, 0.95)');
+                    showHUD(`✔ [2/4] 已选车次：${trainText}，正在进入选座...`, 'rgba(40, 167, 69, 0.95)');
 
                     // 点击底部的「次へ」按钮
                     const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
@@ -372,24 +378,95 @@
                     });
 
                     if (nextBtn) {
-                        smartTrigger(nextBtn);
+                        forceTrigger(nextBtn);
+                        trainSelected = true;
+                    }
+                    return;
+                }
+            }
+
+            // =========================================================
+            // ③ 阶段 2.3：车厢与选座页面 (单次展开 + 字母座位智能锁座)
+            // =========================================================
+            const carriageBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                const t = (b.innerText || '').trim();
+                const cls = b.className || '';
+                return (t.includes('号車') || t.includes('Car No') || (typeof cls === 'string' && cls.includes('carriageContainer'))) && !t.includes('次へ');
+            });
+
+            if (carriageBtns.length > 0) {
+                // 1. 判断车厢是否已经处于展开状态（页面出现「出入り口」或座位图区域）
+                const isCarriageOpen = bodyText.includes('出入り口') || !!document.querySelector('[class*="_carBody_"], [class*="_carInner_"]');
+
+                // 绝对规则：车厢按钮在整个流程中只点击一次！一旦展开绝不重复点击，从根本上防止反复折叠收起
+                if (!isCarriageOpen && !carriageOpened) {
+                    forceTrigger(carriageBtns[0]);
+                    carriageOpened = true;
+                    showHUD('✔ [3/4] 正在展开 1 号车厢，准备锁座...', 'rgba(0, 122, 255, 0.95)');
+                    return;
+                }
+
+                // 2. 精准寻找座位格（每个座位的标签或文字是单个英文字母 A/B/C/D）
+                const seatLetters = Array.from(document.querySelectorAll('button, span, div')).filter(el => {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    return ['A', 'B', 'C', 'D'].includes(t) && el.children.length === 0;
+                });
+
+                const selectedSeats = [];
+                const availableSeats = [];
+
+                for (const el of seatLetters) {
+                    const seatButton = el.closest('button') || el.closest('div[class*="_seat_"]') || el.parentElement || el;
+                    const combinedCls = (seatButton.className || '') + ' ' + (el.className || '');
+
+                    // 检查是否已选中
+                    if (combinedCls.includes('_selected_') || combinedCls.includes('selected')) {
+                        if (!selectedSeats.includes(seatButton)) selectedSeats.push(seatButton);
+                        continue;
+                    }
+
+                    // 检查是否被禁用（已售出的灰色座位）
+                    if (seatButton.disabled || seatButton.hasAttribute('disabled')) continue;
+                    if (combinedCls.includes('_disabled_') || combinedCls.includes('disabled')) continue;
+
+                    if (!availableSeats.includes(seatButton)) {
+                        availableSeats.push(seatButton);
+                    }
+                }
+
+                // 读取页面底部的数量计数（如 "2/2"）
+                const countEl = document.querySelector('[class*="_count_"], [class*="count"]');
+                const countText = countEl ? (countEl.innerText || '').trim() : '';
+
+                // 3. 判断是否已选满（已选达到 2 人，或底部显示 2/2）
+                if (selectedSeats.length >= targetUnits || (countText && countText.startsWith(`${targetUnits}/`))) {
+                    showHUD(`🎉 成功锁定 ${targetUnits} 个座位！正在提交确认...`, 'rgba(40, 167, 69, 0.95)');
+
+                    // 点击底部的「次へ」按钮进入订单确认页
+                    const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                        const t = (b.innerText || '').trim();
+                        return (t === '次へ' || t === 'Next' || t === '下一步') && !b.disabled && !b.hasAttribute('disabled');
+                    });
+
+                    if (nextBtn) {
+                        forceTrigger(nextBtn);
                     }
                     return;
                 }
 
-                // 点击可用空闲座位（每次点击间隔 300ms 保证 React 响应）
-                if (now - lastSeatClickTime > 300 && availableSeats.length > 0) {
+                // 4. 点击空闲可用座位（每次点击防抖 250ms）
+                if (now - lastSeatClickAttempt > 250 && availableSeats.length > 0) {
                     const seatToClick = availableSeats[0];
-                    smartTrigger(seatToClick);
-                    smartTrigger(seatToClick.parentElement);
-                    lastSeatClickTime = now;
+                    forceTrigger(seatToClick);
+                    if (seatToClick.parentElement) forceTrigger(seatToClick.parentElement);
+                    lastSeatClickAttempt = now;
                     showHUD(`💺 正在锁定座位 (${selectedSeats.length + 1}/${targetUnits})...`, 'rgba(40, 167, 69, 0.95)');
                     return;
                 }
             }
 
             // =========================================================
-            // ④ 阶段 2.4：确认页面直达订单支付页
+            // ④ 阶段 2.4：确认页面直接提交，直达订单支付页
             // =========================================================
             const isConfirmPage = !!document.querySelector('[class*="orderConfirm"], [class*="carriageList"]');
             const actionBtns = Array.from(document.querySelectorAll('button')).filter(b => {
@@ -397,10 +474,10 @@
                 return (t.includes('次へ') || t.includes('確定') || t.includes('予約確認') || t.includes('進む') || t.includes('Next')) && !b.disabled && !b.hasAttribute('disabled');
             });
 
-            if (actionBtns.length > 0 && isConfirmPage && !confirmDone) {
+            if (actionBtns.length > 0 && isConfirmPage && !confirmSubmitted) {
                 const btn = actionBtns[actionBtns.length - 1];
-                smartTrigger(btn);
-                confirmDone = true;
+                forceTrigger(btn);
+                confirmSubmitted = true;
                 showHUD('🎉 选座锁定成功！正在火速直达订单支付页...', 'rgba(40, 167, 69, 0.95)');
                 clearInterval(linktivityTimer);
             }
@@ -413,6 +490,6 @@
     // 阶段 3: 订单填写与支付页
     // =============================================================
     if (window.location.pathname.includes('/booking/pay')) {
-        showHUD('🎉 恭喜！已全自动抵达订单支付页！请核对并支付！', 'rgba(40, 167, 69, 0.95)');
+        showHUD('🎉 恭喜！已全自动直达订单支付页！请核对并支付！', 'rgba(40, 167, 69, 0.95)');
     }
 })();
