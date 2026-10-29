@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      18.0
-// @description  终极防抽搐版：1-5号车顺次单向智能遍历；就地补齐满额强锁；发车时间与精确席位锁定；毫秒差候补偶数座；直达Visa支付！
+// @version      19.0
+// @description  终极防超额与防抽搐版：严格锁定2人2座，实时DOM读取多退少补；1-5号车顺次单向智能遍历；就地补齐强锁；发车时间与精确席位锁定；直达Visa支付！
 // @author       Antigravity
 // @match        *://ars-saganokanko.triplabo.jp/*
 // @match        *://file.sagano.linktivity.io/*
@@ -240,39 +240,74 @@
                 }
             }
 
-            // ③ 自动设定人数：点击加号按钮直到达到目标人数 (安全遍历，绝不使用非法CSS选择器)
-            if (unitCount < targetUnits) {
-                const allButtons = Array.from(document.querySelectorAll('button'));
-                const plusBtn = allButtons.find(b => {
-                    const use = b.querySelector('use');
-                    const href = use ? (use.getAttribute('xlink:href') || use.getAttribute('href') || '') : '';
-                    const cls = (b.className || '').toLowerCase();
-                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-                    const txt = (b.innerText || '').trim();
-                    return href.includes('plus') || cls.includes('plus') || aria.includes('plus') || txt === '+';
-                });
+            // ③ 自动设定人数：严格从 DOM 读取当前人数，多退少补，确保精准为 targetUnits (2人)
+            const allButtons = Array.from(document.querySelectorAll('button'));
+            const plusBtn = allButtons.find(b => {
+                const use = b.querySelector('use');
+                const href = use ? (use.getAttribute('xlink:href') || use.getAttribute('href') || '') : '';
+                const cls = (b.className || '').toLowerCase();
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                const txt = (b.innerText || '').trim();
+                return href.includes('plus') || cls.includes('plus') || aria.includes('plus') || txt === '+';
+            });
 
-                if (plusBtn && !plusBtn.disabled) {
-                    plusBtn.click();
-                    plusBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    unitCount++;
-                    showHUD(`👥 已设定人数: ${unitCount}/${targetUnits} 人`, 'rgba(40, 167, 69, 0.95)');
+            const minusBtn = allButtons.find(b => {
+                const use = b.querySelector('use');
+                const href = use ? (use.getAttribute('xlink:href') || use.getAttribute('href') || '') : '';
+                const cls = (b.className || '').toLowerCase();
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                const txt = (b.innerText || '').trim();
+                return href.includes('minus') || cls.includes('minus') || aria.includes('minus') || txt === '-';
+            });
+
+            // 从界面实时解析当前已有人数
+            let currentDomUnits = 0;
+            if (plusBtn) {
+                const stepperContainer = plusBtn.closest('div[class*="count"], div[class*="unit"], div[class*="stepper"], div[class*="item"]') || plusBtn.parentElement;
+                if (stepperContainer) {
+                    const inputEl = stepperContainer.querySelector('input');
+                    if (inputEl && inputEl.value) {
+                        currentDomUnits = parseInt(inputEl.value, 10) || 0;
+                    } else {
+                        const numEl = Array.from(stepperContainer.querySelectorAll('span, p, div')).find(el => /^\d+$/.test((el.innerText || '').trim()));
+                        if (numEl) currentDomUnits = parseInt(numEl.innerText.trim(), 10) || 0;
+                    }
                 }
             }
 
-            // ④ 自动点击「予約手続きへ」进入车次/选座流程
-            if (unitCount >= targetUnits && !submitDone) {
-                const allBtns = Array.from(document.querySelectorAll('button'));
-                const submitBtn = allBtns.find(b => {
+            if (currentDomUnits > 0) {
+                unitCount = currentDomUnits;
+            }
+
+            // 人数不足 targetUnits (2人)：单次点击加号并防抖
+            if (unitCount < targetUnits && plusBtn && !plusBtn.disabled && (now - lastCalendarAction > 600)) {
+                lastCalendarAction = now;
+                safeClick(plusBtn);
+                unitCount++;
+                showHUD(`👥 正在设定人数: ${unitCount}/${targetUnits} 人...`, 'rgba(40, 167, 69, 0.95)');
+                return;
+            }
+
+            // 人数超出 targetUnits (如误加成 3 或 4 人)：自动点击减号回退！
+            if (unitCount > targetUnits && minusBtn && !minusBtn.disabled && (now - lastCalendarAction > 600)) {
+                lastCalendarAction = now;
+                safeClick(minusBtn);
+                unitCount--;
+                showHUD(`👥 人数超额，正在回退人数: ${unitCount}/${targetUnits} 人...`, 'rgba(255, 149, 0, 0.95)');
+                return;
+            }
+
+            // ④ 当且仅当人数精准等于 targetUnits 时，点击「予約手続きへ」进入选座流程
+            if (unitCount === targetUnits && !submitDone) {
+                const submitBtn = allButtons.find(b => {
                     const txt = (b.innerText || b.textContent || '').trim();
                     return (txt.includes('予約手続き') || txt.includes('予約へ進む') || txt.includes('次へ') || txt.includes('日程の確定') || txt.includes('Checkout')) && !b.disabled && !b.hasAttribute('disabled');
                 });
 
                 if (submitBtn) {
                     submitDone = true;
-                    showHUD('🎉 正在极速冲刺进入车次与选座页...', 'rgba(40, 167, 69, 0.95)');
-                    submitBtn.click();
-                    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    showHUD(`🎉 人数已锁定为 ${targetUnits} 人！正在进入车次与选座页...`, 'rgba(40, 167, 69, 0.95)');
+                    safeClick(submitBtn);
                     clearInterval(mainTimer);
                 }
             }
@@ -417,13 +452,15 @@
 
             if (countEl || carList.length > 0) {
                 let curSelected = 0;
-                let maxAllowed = targetUnits;
+                let maxAllowed = targetUnits || 2;
 
                 if (countEl) {
                     const m = (countEl.innerText || '').match(/(\d+)\s*\/\s*(\d+)/);
                     if (m) {
                         curSelected = parseInt(m[1], 10);
-                        maxAllowed = parseInt(m[2], 10);
+                        const domMax = parseInt(m[2], 10);
+                        // 【最高安全级截断】：死死限制最大座位数为 targetUnits (2人)，绝对禁止选超过 2 个座位！
+                        maxAllowed = Math.min(domMax, targetUnits || 2);
                     }
                 }
 
