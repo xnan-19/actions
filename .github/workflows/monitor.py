@@ -241,33 +241,21 @@ def send_bark_notification(service_name, date_str, seats_desc, pay_url):
 def execute_monitor():
     # 测试推送模式
     if os.getenv("TEST_BARK", "").lower() in ["true", "1"]:
-        log("📢 触发 Bark 官方支付直达测试推送...")
-        test_service = "嵯峨野 01 号 (官方车次)"
+        log("📢 触发 Bark 官方 DOM 自动化直达测试推送...")
+        test_service = "SAGANO_01"
         test_date = "2026-10-31"
         test_seats = "04车01号, 04车02号"
-        test_order_data = {
-            "sessionId": "sess_test_sagano_12345",
-            "session": {
-                "activityId": PRODUCT_ID,
-                "languageCode": "ja",
-                "planId": "SAGANO-YRBTL-1",
-                "targetDate": test_date,
-                "planStartTime": "10:02",
-                "planUnitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}],
-                "participantFirstName": PASSENGER_INFO["firstName"],
-                "participantLastName": PASSENGER_INFO["lastName"],
-                "participantEmailAddress": PASSENGER_INFO["email"],
-                "destinationEmail": PASSENGER_INFO["email"],
-                "participantResidentRegion": PASSENGER_INFO["country"],
-                "currencyCode": "JPY",
-                "bookingNotes": "fromStationId=1&toStationId=2&serviceId=SAGANO_01&seats=04-1-01-ORDINARY,04-1-02-ORDINARY"
-            },
-            "unitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}]
-        }
-        encoded_order = urllib.parse.quote(json.dumps(test_order_data, ensure_ascii=False))
-        pay_url = f"https://ars-saganokanko.triplabo.jp/booking/pay#order={encoded_order}"
-        send_bark_notification(test_service, test_date, test_seats, pay_url)
-        log("✅ 官方直达测试推送已成功发出！请在手机上查看！")
+        test_seats_param = urllib.parse.quote(test_seats)
+        pay_url = (
+            f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
+            f"?date={test_date}"
+            f"&serviceId={test_service}"
+            f"&seats={test_seats_param}"
+            f"&unitsCount={TICKETS_COUNT}"
+            f"&auto=1"
+        )
+        send_bark_notification("嵯峨野 01 号 (官方车次)", test_date, test_seats, pay_url)
+        log("✅ 官方 DOM 自动化测试推送已成功发出！请在手机上查看！")
         return True
 
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
@@ -292,53 +280,23 @@ def execute_monitor():
         for srv in available_services:
             service_id = srv.get("serviceId")
             service_name = srv.get("name", service_id)
-            log(f"正在尝试锁定车次: {service_name} ({service_id}) ...")
+            log(f"正在检索车次: {service_name} ({service_id}) ...")
 
-            target_seats = [
-                {"logicalCarId": "04", "seatGroupId": 1, "seatId": "01", "arrangementTypeId": "ORDINARY"},
-                {"logicalCarId": "04", "seatGroupId": 1, "seatId": "02", "arrangementTypeId": "ORDINARY"}
-            ]
+            seats_desc = "04车01号, 04车02号"
+            seats_param = urllib.parse.quote(seats_desc)
+            pay_url = (
+                f"https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL"
+                f"?date={date_str}"
+                f"&serviceId={service_id}"
+                f"&seats={seats_param}"
+                f"&unitsCount={TICKETS_COUNT}"
+                f"&auto=1"
+            )
 
-            locked = lock_seats(date_str, service_id, target_seats)
-            if not locked:
-                target_seats = [
-                    {"logicalCarId": "03", "seatGroupId": 1, "seatId": "01", "arrangementTypeId": "ORDINARY"},
-                    {"logicalCarId": "03", "seatGroupId": 1, "seatId": "02", "arrangementTypeId": "ORDINARY"}
-                ]
-                locked = lock_seats(date_str, service_id, target_seats)
-
-            if locked:
-                seats_desc = ", ".join([f"{s['logicalCarId']}车{s['seatId']}号" for s in target_seats])
-                session_id = create_session(date_str, service_id, target_seats, total=TICKETS_COUNT)
-                if not session_id:
-                    continue
-
-                order_data = {
-                    "sessionId": session_id,
-                    "session": {
-                        "activityId": PRODUCT_ID,
-                        "languageCode": "ja",
-                        "planId": "SAGANO-YRBTL-1",
-                        "targetDate": date_str,
-                        "planStartTime": srv.get("startTime", "10:02"),
-                        "planUnitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}],
-                        "participantFirstName": PASSENGER_INFO["firstName"],
-                        "participantLastName": PASSENGER_INFO["lastName"],
-                        "participantEmailAddress": PASSENGER_INFO["email"],
-                        "destinationEmail": PASSENGER_INFO["email"],
-                        "participantResidentRegion": PASSENGER_INFO["country"],
-                        "currencyCode": "JPY",
-                        "bookingNotes": f"fromStationId=1&toStationId=2&serviceId={service_id}&seats=" + ",".join([f"{s['logicalCarId']}-{s['seatGroupId']}-{s['seatId']}-{s['arrangementTypeId']}" for s in target_seats])
-                    },
-                    "unitItems": [{"id": "ITM-SAGANO-YRBTL-1-01", "count": TICKETS_COUNT}]
-                }
-                encoded_order = urllib.parse.quote(json.dumps(order_data, ensure_ascii=False))
-                pay_url = f"https://ars-saganokanko.triplabo.jp/booking/pay#order={encoded_order}"
-
-                log(f"🔗 生成官方主站支付链接: {pay_url}")
-                send_bark_notification(service_name, date_str, seats_desc, pay_url)
-                log("🎯 抢票全流程执行完毕，已发送支付通知！")
-                return True
+            log(f"🔗 生成官方 DOM 自动化直达链接: {pay_url}")
+            send_bark_notification(service_name, date_str, seats_desc, pay_url)
+            log("🎯 发现可用余票，已全自动发送强提醒通知！")
+            return True
 
     log("本次巡检结束，未发现或未成功锁定余票。")
     return False
