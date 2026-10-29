@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         嵯峨野小火车自动预订直达
+// @name         嵯峨野小火车全自动秒选车次直达订单页
 // @namespace    sagano-romantic-train
-// @version      2.0
-// @description  点击Bark推送链接后，自动选择路线、翻月、选日期、选人数并点击预订手续，合法生成官方Session，绝不回退首页！
-// @match        https://ars-saganokanko.triplabo.jp/*
-// @match        https://file.sagano.linktivity.io/*
+// @version      5.0
+// @description  收到Bark通知点开后，全自动选路线、翻月、选日期、选车次、选人数，直达订单填写与支付页！
+// @match        *://ars-saganokanko.triplabo.jp/*
+// @match        *://file.sagano.linktivity.io/*
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
@@ -12,36 +12,42 @@
 (function() {
     'use strict';
 
+    function showHUD(text, bgColor) {
+        let hud = document.getElementById('sagano-hud');
+        if (!hud) {
+            hud = document.createElement('div');
+            hud.id = 'sagano-hud';
+            hud.style.cssText = 'position:fixed;top:40%;left:5%;width:90%;z-index:2147483647;padding:16px 20px;font-size:16px;font-weight:bold;text-align:center;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.5);pointer-events:none;transition:all 0.3s ease;';
+            (document.body || document.documentElement).appendChild(hud);
+        }
+        hud.style.background = bgColor || 'rgba(0, 122, 255, 0.95)';
+        hud.style.color = '#ffffff';
+        hud.innerHTML = text;
+    }
+
+    showHUD('⚡【全自动抢票已启动】正在检索车票...', 'rgba(0, 122, 255, 0.95)');
+
     const url = new URL(window.location.href);
     const params = url.searchParams;
 
-    // 只有携带 auto=1 时才执行全自动化流转
-    const isAuto = params.get('auto') === '1' || sessionStorage.getItem('sagano_auto') === '1';
-    if (!isAuto) return;
+    const targetDate = params.get('date') || sessionStorage.getItem('sagano_target_date') || '2026-11-10';
+    const targetService = params.get('serviceId') || sessionStorage.getItem('sagano_service_id') || '';
+    const targetUnits = parseInt(params.get('unitsCount') || '2', 10);
 
-    sessionStorage.setItem('sagano_auto', '1');
+    sessionStorage.setItem('sagano_target_date', targetDate);
+    if (targetService) sessionStorage.setItem('sagano_service_id', targetService);
 
-    console.log('[嵯峨野助手] 自动流转脚本已就绪...');
-
-    // -------------------------------------------------------------
-    // 页面 1: 活动详情页 (https://ars-saganokanko.triplabo.jp/activity/ja/LINKTIVITY-YRBTL)
-    // -------------------------------------------------------------
+    // =============================================================
+    // 阶段 1: 活动详情页 (自动选路线、翻月、选日期、选人数、进入预约)
+    // =============================================================
     if (window.location.pathname.includes('/activity/')) {
-        const targetDate = params.get('date') || sessionStorage.getItem('sagano_target_date') || '';
-        const targetSeats = params.get('seats') || sessionStorage.getItem('sagano_target_seats') || '';
-        const targetUnits = parseInt(params.get('unitsCount') || '2', 10);
-
-        if (targetDate) sessionStorage.setItem('sagano_target_date', targetDate);
-        if (targetSeats) sessionStorage.setItem('sagano_target_seats', targetSeats);
-
-        // 解析目标年月与日，例如 "2026-11-05" -> 年: 2026, 月: 11, 日: 5
-        let targetMonthStr = '';
-        let targetDayNum = 0;
-        if (targetDate) {
-            const parts = targetDate.split('-');
-            if (parts.length === 3) {
-                targetMonthStr = `${parseInt(parts[1], 10)}月`; // "11月"
-                targetDayNum = parseInt(parts[2], 10);          // 5
+        let targetMonth = '11月';
+        let targetDay = '10';
+        if (targetDate && targetDate.includes('-')) {
+            const p = targetDate.split('-');
+            if (p.length === 3) {
+                targetMonth = parseInt(p[1], 10) + '月';
+                targetDay = String(parseInt(p[2], 10));
             }
         }
 
@@ -50,115 +56,118 @@
         let unitDone = false;
         let submitDone = false;
 
-        const timer = setInterval(() => {
-            // 1. 自动选择路线：优先点击「嵯峨駅／嵐山駅 → 亀岡駅」
-            if (!routeDone) {
-                const planButtons = document.querySelectorAll('#selectPlan button, #selectPlan div[class*="plan"], button[class*="PlanPicker"], div[class*="PlanPicker"]');
-                for (const btn of planButtons) {
-                    const text = btn.innerText || btn.textContent || '';
-                    if (text.includes('嵯峨駅') && text.includes('亀岡駅') && !btn.hasAttribute('disabled')) {
-                        btn.click();
-                        console.log('[嵯峨野助手] ✔ 已自动选择路线: 嵯峨/岚山 -> 龟冈');
-                        routeDone = true;
-                        break;
-                    }
-                }
-            }
-
-            // 2. 自动翻月与选日期
-            if (!dateDone && targetMonthStr && targetDayNum > 0) {
-                // 检查当前月份文本（如 "10月 2026"）
-                const currentMonthElem = document.querySelector('[class*="dateTableCurrent"]');
-                if (currentMonthElem) {
-                    const curMonthText = currentMonthElem.innerText || '';
-                    if (!curMonthText.includes(targetMonthStr)) {
-                        // 不是目标月份，寻找并点击向右箭头切月份
-                        const nextBtn = document.querySelector('button[class*="dateTableNext"], [class*="dateTableHead"] button:last-child');
-                        if (nextBtn && !nextBtn.hasAttribute('disabled')) {
+        const mainTimer = setInterval(() => {
+            // ① 自动翻到 11 月
+            const monthHeader = document.querySelector('[class*="dateTableCurrent"], [class*="month"], [class*="dateTableHead"] p');
+            if (monthHeader) {
+                const curMonth = (monthHeader.innerText || monthHeader.textContent || '');
+                if (!curMonth.includes(targetMonth)) {
+                    const nextButtons = document.querySelectorAll('button[class*="Next"], button[class*="next"], [class*="dateTableHead"] button');
+                    if (nextButtons.length > 0) {
+                        const nextBtn = nextButtons[nextButtons.length - 1];
+                        if (!nextBtn.disabled) {
                             nextBtn.click();
-                            console.log(`[嵯峨野助手] 正在翻月切换到 ${targetMonthStr}...`);
-                            return; // 等待下一次轮询更新 DOM
+                            showHUD(`📅 正在翻月切换到 ${targetMonth}...`, 'rgba(255, 149, 0, 0.95)');
+                            return;
                         }
-                    } else {
-                        // 已经是目标月份，查找可点击的日期按钮
-                        const dayButtons = document.querySelectorAll('button[class*="dateTableDayButton"], [class*="dateTableBodyCell"] button');
-                        for (const dayBtn of dayButtons) {
-                            if (dayBtn.hasAttribute('disabled')) continue;
-                            const dayText = (dayBtn.innerText || dayBtn.textContent || '').trim();
-                            if (parseInt(dayText, 10) === targetDayNum) {
-                                dayBtn.click();
-                                console.log(`[嵯峨野助手] ✔ 已成功选中日期: ${targetDate}`);
-                                dateDone = true;
-                                break;
-                            }
+                    }
+                } else if (!dateDone) {
+                    // 已是 11 月，查找并点击目标日期（如 10 号）
+                    const dayButtons = document.querySelectorAll('button[class*="dateTableDayButton"], [class*="dateTableBodyCell"] button, [class*="day"] button');
+                    for (const btn of dayButtons) {
+                        if (btn.hasAttribute('disabled') || btn.disabled) continue;
+                        const dText = (btn.innerText || btn.textContent || '').trim();
+                        if (dText === targetDay) {
+                            btn.click();
+                            dateDone = true;
+                            showHUD(`✔ 已成功选中日期：${targetMonth}${targetDay}日`, 'rgba(40, 167, 69, 0.95)');
+                            break;
                         }
                     }
                 }
             }
 
-            // 3. 自动调整人数（目标人数例如 2 人）
-            if (dateDone && !unitDone) {
-                // 寻找人数选择框或者加号按钮
-                const plusBtn = document.querySelector('[class*="SelectUnit"] [class*="plus"], [class*="amountCount"] button:last-child, [class*="InputNumber"] [class*="plus"]');
-                const countInputs = document.querySelectorAll('[class*="SelectUnit"] input[type="number"], [class*="amountCount"] input');
-                
-                let curCount = 0;
-                if (countInputs.length > 0) {
-                    curCount = parseInt(countInputs[0].value || '0', 10);
-                }
-
-                if (curCount < targetUnits && plusBtn) {
-                    plusBtn.click();
-                    console.log(`[嵯峨野助手] 正在增加人数... 当前: ${curCount + 1}`);
-                } else if (curCount >= targetUnits || !plusBtn) {
-                    unitDone = true;
-                    console.log(`[嵯峨野助手] ✔ 人数已就绪: ${targetUnits}人`);
-                }
-            }
-
-            // 4. 自动点击「予約手続きへ / 立即预约」大按钮
-            if (!submitDone) {
-                // 寻找底部预约按钮
-                const allButtons = document.querySelectorAll('button');
-                for (const btn of allButtons) {
-                    const text = (btn.innerText || btn.textContent || '').trim();
-                    if ((text.includes('予約手続きへ') || text.includes('予約へ進む') || text.includes('Checkout')) && !btn.hasAttribute('disabled')) {
-                        console.log('[嵯峨野助手] 🎉 预订按钮已激活，正在全速进入预订流程...');
-                        submitDone = true;
-                        clearInterval(timer);
-                        btn.click();
+            // ② 自动选择路线：精确点击「嵯峨駅／嵐山駅 → 亀岡駅」按钮
+            if (dateDone && !routeDone) {
+                const candidates = document.querySelectorAll('#selectPlan button, #selectPlan [class*="PlanPicker"], [id="selectPlan"] *');
+                for (const el of candidates) {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    if (txt.includes('嵯峨駅') && txt.includes('亀岡駅') && txt.startsWith('嵯峨')) {
+                        const targetBtn = el.closest('button') || el;
+                        targetBtn.click();
+                        targetBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        
+                        const radio = targetBtn.querySelector('input[type="radio"]');
+                        if (radio) {
+                            radio.checked = true;
+                            radio.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        routeDone = true;
+                        showHUD('✔ 路线已自动选中：嵯峨/岚山 ➔ 龟冈', 'rgba(40, 167, 69, 0.95)');
                         break;
                     }
                 }
             }
-        }, 150);
 
-        // 30 秒安全超时停止
-        setTimeout(() => clearInterval(timer), 30000);
-    }
-
-    // -------------------------------------------------------------
-    // 页面 2: Linktivity 外部选座页 (https://file.sagano.linktivity.io/)
-    // -------------------------------------------------------------
-    if (window.location.hostname.includes('linktivity.io')) {
-        console.log('[嵯峨野助手] 当前处于选座页面，准备自动确认或一键流转...');
-        const linkTimer = setInterval(() => {
-            const nextBtns = document.querySelectorAll('button');
-            for (const b of nextBtns) {
-                const text = (b.innerText || '').trim();
-                if ((text.includes('確定') || text.includes('次へ') || text.includes('確認')) && !b.disabled) {
-                    // 用户可在该页面确认座位
+            // ③ 自动设定人数为 2 人
+            if (dateDone) {
+                const plusBtns = document.querySelectorAll('button[class*="plus"], [class*="plus"], [class*="InputNumber"] button:last-child');
+                const inputs = document.querySelectorAll('input[type="number"], [class*="InputNumber"] input');
+                let cur = 0;
+                if (inputs.length > 0) {
+                    cur = parseInt(inputs[0].value || '0', 10);
+                }
+                if (cur < targetUnits && plusBtns.length > 0) {
+                    plusBtns[0].click();
+                } else if (cur >= targetUnits) {
+                    unitDone = true;
                 }
             }
-        }, 300);
-        setTimeout(() => clearInterval(linkTimer), 20000);
+
+            // ④ 自动点击「予約手続きへ」进入车次/选座流程
+            if (!submitDone) {
+                const allBtns = document.querySelectorAll('button');
+                for (const b of allBtns) {
+                    const bTxt = (b.innerText || b.textContent || '').trim();
+                    if ((bTxt.includes('予約手続き') || bTxt.includes('予約へ進む') || bTxt.includes('Checkout')) && !b.disabled && !b.hasAttribute('disabled')) {
+                        submitDone = true;
+                        showHUD('🎉 正在极速冲刺进入车次与订单页...', 'rgba(40, 167, 69, 0.95)');
+                        b.click();
+                        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        clearInterval(mainTimer);
+                        break;
+                    }
+                }
+            }
+        }, 100);
+
+        setTimeout(() => clearInterval(mainTimer), 30000);
     }
 
-    // -------------------------------------------------------------
-    // 页面 3: 订单填写与支付页面 (https://ars-saganokanko.triplabo.jp/booking/pay)
-    // -------------------------------------------------------------
+    // =============================================================
+    // 阶段 2: Linktivity 选座系统 (自动确认直达订单页)
+    // =============================================================
+    if (window.location.hostname.includes('linktivity.io')) {
+        showHUD('🚀 抵达选座系统，正在锁定车次与座位...', 'rgba(40, 167, 69, 0.95)');
+        const seatTimer = setInterval(() => {
+            const allButtons = document.querySelectorAll('button');
+            for (const b of allButtons) {
+                const text = (b.innerText || '').trim();
+                if ((text.includes('確定') || text.includes('次へ') || text.includes('進む') || text.includes('予約')) && !b.disabled) {
+                    b.click();
+                    clearInterval(seatTimer);
+                    break;
+                }
+            }
+        }, 200);
+
+        setTimeout(() => clearInterval(seatTimer), 25000);
+    }
+
+    // =============================================================
+    // 阶段 3: 订单填写与支付页
+    // =============================================================
     if (window.location.pathname.includes('/booking/pay')) {
-        console.log('[嵯峨野助手] 🎉 恭喜！已合法进入官方订单与支付填写页！');
-        sessionStorage.removeItem('sagano_auto'); // 流程结束
+        showHUD('🎉 恭喜！已成功直接停留在订单支付页！', 'rgba(40, 167, 69, 0.95)');
     }
 })();
