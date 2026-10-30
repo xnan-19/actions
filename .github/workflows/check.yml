@@ -2,7 +2,7 @@ name: 岚山小火车纯接口抢票与直达Visa支付机器人
 
 on:
   schedule:
-    # 严格每 15 分钟全自动轮询一次
+    # 严格每 15 分钟全自动轮询一次 (24小时不间断)
     - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
@@ -11,9 +11,9 @@ on:
         required: false
         default: 'false'
       target_dates:
-        description: '监控目标日期 (多日期用逗号分隔，如 2026-10-31,2026-11-01)'
+        description: '监控目标日期 (多日期用逗号分隔)'
         required: true
-        default: '2026-10-31'
+        default: '2026-11-05,2026-11-10,2026-11-24'
       tickets_count:
         description: '购票张数'
         required: true
@@ -42,6 +42,6 @@ jobs:
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
           TEST_BARK: ${{ github.event.inputs.test_bark || 'false' }}
-          TARGET_DATES: ${{ github.event.inputs.target_dates || '2026-10-31' }}
+          TARGET_DATES: ${{ github.event.inputs.target_dates || '2026-11-05,2026-11-10,2026-11-24' }}
           TICKETS_COUNT: ${{ github.event.inputs.tickets_count || '2' }}
         run: python .github/workflows/monitor.py
