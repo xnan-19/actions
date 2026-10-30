@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 
 BARK_KEY = os.getenv("BARK_KEY", "")
-TARGET_DATES_ENV = os.getenv("TARGET_DATES", "2026-10-31")
+TARGET_DATES_ENV = os.getenv("TARGET_DATES", "2026-11-05,2026-11-10,2026-11-24")
 TICKETS_COUNT = int(os.getenv("TICKETS_COUNT", "2"))
 
 PASSENGER_INFO = {
@@ -384,11 +384,33 @@ def execute_monitor():
         log("✅ 连通性测试推送已发出！")
         return True
 
+    # 历史三大业务规则定义
+    rules_map = {
+        "2026-11-05": {
+            "label": "11月05日",
+            "desc": "发车时间 >= 10:00 (上午10点及以后)",
+            "filter": lambda t: int(t.split(":")[0]) >= 10 if (t and ":" in t) else True
+        },
+        "2026-11-10": {
+            "label": "11月10日",
+            "desc": "全天班次 (严格满2席)",
+            "filter": lambda t: True
+        },
+        "2026-11-24": {
+            "label": "11月24日",
+            "desc": "13:00 ~ 16:00 黄金时段",
+            "filter": lambda t: "13:00" <= t <= "16:00" if t else False
+        }
+    }
+
     dates = [d.strip() for d in TARGET_DATES_ENV.split(",") if d.strip()]
     log(f"开始监控岚山小火车余票，监控日期列表: {dates}，人数: {TICKETS_COUNT}")
 
     for date_str in dates:
-        log(f"正在扫描日期: {date_str} ...")
+        rule_info = rules_map.get(date_str)
+        rule_desc_str = f" [规则: {rule_info['desc']}]" if rule_info else ""
+        log(f"正在扫描日期: {date_str}{rule_desc_str} ...")
+
         inv_data = search_inventory(date_str, total=TICKETS_COUNT)
         if not inv_data or not inv_data.get("services"):
             log(f"日期 {date_str} 未查询到车次数据")
@@ -425,6 +447,11 @@ def execute_monitor():
             service_id = srv["serviceId"]
             service_name = srv["name"]
             dep_time = srv.get("depTime", "")
+
+            # 严格执行对应日期的发车时间窗口过滤规则
+            if rule_info and not rule_info["filter"](dep_time):
+                log(f"  • {service_name} ({dep_time}) -> 不满足该日期限定条件 [{rule_info['desc']}]，跳过")
+                continue
 
             best_pair, best_desc = find_best_even_seats(date_str, service_id, target_count=TICKETS_COUNT)
             if not best_pair:
